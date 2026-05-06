@@ -1,0 +1,5 @@
+psutil>=5.9
+pynvml>=11.0
+matplotlib>=3.5
+numpy>=1.21
+pycairo>=1.20
