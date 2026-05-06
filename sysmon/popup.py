@@ -1,477 +1,664 @@
-"""Popup panel window shown when tray icon is clicked."""
+"""
+Quick-stats popup panel.
+
+Movable (drag header), resizable (drag grip or window edge),
+position/size persisted in settings. Content scales with the window —
+progress bars expand, labels ellipsise, no scrolling.
+Minimum size: 220 × 200 px.
+"""
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
 from .monitor import SystemStats
 
+# ── Minimum dimensions ────────────────────────────────────────────────────────
+MIN_W = 220
+MIN_H = 200
 
+# ── CSS ───────────────────────────────────────────────────────────────────────
 CSS = b"""
 window.sysmon-popup {
     background-color: #1e1e2e;
-    border-radius: 10px;
-    border: 1px solid #444466;
+    border: 1px solid #45475a;
 }
-label.section-title {
+
+/* ---- header / drag handle ---- */
+.popup-header {
+    background-color: #181825;
+    border-bottom: 1px solid #313244;
+    padding: 5px 8px;
+}
+.popup-title {
     color: #cdd6f4;
+    font-size: 11px;
     font-weight: bold;
-    font-size: 10px;
-    letter-spacing: 1px;
 }
-label.value {
-    color: #89dceb;
-    font-size: 12px;
-    font-family: monospace;
-}
-label.warn {
-    color: #f38ba8;
-}
-label.ok {
-    color: #a6e3a1;
-}
-label.warning-text {
-    color: #fab387;
-    font-size: 10px;
-}
-button.open-btn {
-    background-color: #313244;
-    color: #cdd6f4;
-    border-radius: 6px;
+.popup-close {
+    background: transparent;
     border: none;
-    padding: 4px 10px;
+    color: #6c7086;
+    font-size: 13px;
+    padding: 0 2px;
+    min-width: 0;
+    min-height: 0;
 }
-button.open-btn:hover {
-    background-color: #45475a;
+.popup-close:hover { color: #f38ba8; }
+
+/* ---- section titles ---- */
+.sec-title {
+    color: #89b4fa;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 0.8px;
 }
+
+/* ---- metric values ---- */
+.val       { color: #cdd6f4; font-family: monospace; font-size: 11px; }
+.val-warn  { color: #f38ba8; font-family: monospace; font-size: 11px; }
+.val-ok    { color: #a6e3a1; font-family: monospace; font-size: 11px; }
+.sub       { color: #6c7086; font-size: 9px; }
+
+/* ---- progress bars ---- */
 progressbar trough {
     background-color: #313244;
     border-radius: 3px;
-    min-height: 6px;
+    min-height: 7px;
 }
 progressbar progress {
-    background-color: #89b4fa;
     border-radius: 3px;
-    min-height: 6px;
+    min-height: 7px;
 }
-progressbar.warn progress {
-    background-color: #fab387;
+progressbar.bar-cpu progress  { background-color: #89b4fa; }
+progressbar.bar-gpu progress  { background-color: #a6e3a1; }
+progressbar.bar-ram progress  { background-color: #cba6f7; }
+progressbar.bar-fan progress  { background-color: #89dceb; }
+progressbar.bar-warn progress { background-color: #fab387; }
+progressbar.bar-crit progress { background-color: #f38ba8; }
+
+/* ---- warning list ---- */
+.warn-text { color: #fab387; font-size: 10px; }
+
+/* ---- bottom buttons ---- */
+.btn-action {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 10px;
 }
-progressbar.crit progress {
-    background-color: #f38ba8;
+.btn-action:hover { background-color: #45475a; }
+.btn-curve {
+    background-color: #1e1e2e;
+    color: #89b4fa;
+    border: 1px solid #45475a;
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 10px;
+}
+.btn-curve:hover { background-color: #313244; }
+
+/* ---- resize grip ---- */
+.resize-grip {
+    color: #45475a;
+    font-size: 13px;
+    padding: 0 2px 1px 0;
+}
+
+/* ---- separator ---- */
+separator { background-color: #313244; min-height: 1px; }
+
+/* ---- fan curve toggle panel ---- */
+.curve-panel {
+    background-color: #181825;
+    border-top: 1px solid #313244;
+    padding: 6px;
 }
 """
 
+_CSS_APPLIED = [False]
+
 
 def _apply_css():
-    provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
+    if _CSS_APPLIED[0]:
+        return
+    p = Gtk.CssProvider()
+    p.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(),
-        provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
     )
+    _CSS_APPLIED[0] = True
 
 
-_css_applied = False
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _lbl(text="", css="val", xalign=0.0, ellipsize=False) -> Gtk.Label:
+    l = Gtk.Label(label=text, xalign=xalign)
+    if css:
+        l.get_style_context().add_class(css)
+    if ellipsize:
+        l.set_ellipsize(Pango.EllipsizeMode.END)
+    return l
 
 
-def _pbar(pct: float) -> Gtk.ProgressBar:
+def _pbar(bar_class="bar-cpu") -> Gtk.ProgressBar:
     pb = Gtk.ProgressBar()
-    pb.set_fraction(min(pct / 100.0, 1.0))
-    pb.set_size_request(160, -1)
-    ctx = pb.get_style_context()
-    ctx.add_class("progressbar")
-    if pct >= 90:
-        ctx.add_class("crit")
-    elif pct >= 70:
-        ctx.add_class("warn")
+    pb.set_hexpand(True)          # fills available width
+    pb.get_style_context().add_class(bar_class)
     return pb
 
 
-def _lbl(text: str, css_class: str = "value") -> Gtk.Label:
-    lbl = Gtk.Label(label=text, xalign=0.0)
-    lbl.get_style_context().add_class(css_class)
+def _update_pbar(pb: Gtk.ProgressBar, pct: float,
+                 normal_cls: str, warn_pct=70, crit_pct=90):
+    pb.set_fraction(min(pct / 100.0, 1.0))
+    ctx = pb.get_style_context()
+    for c in ("bar-cpu", "bar-gpu", "bar-ram", "bar-fan", "bar-warn", "bar-crit"):
+        ctx.remove_class(c)
+    if pct >= crit_pct:
+        ctx.add_class("bar-crit")
+    elif pct >= warn_pct:
+        ctx.add_class("bar-warn")
+    else:
+        ctx.add_class(normal_cls)
+
+
+def _section_row(title: str) -> Gtk.Label:
+    lbl = _lbl(title.upper(), "sec-title")
+    lbl.set_margin_top(7)
+    lbl.set_margin_bottom(1)
     return lbl
 
 
-def _section_title(text: str) -> Gtk.Label:
-    lbl = Gtk.Label(label=text.upper(), xalign=0.0)
-    lbl.get_style_context().add_class("section-title")
-    lbl.set_margin_top(8)
-    return lbl
-
+# ── Main popup window ─────────────────────────────────────────────────────────
 
 class PopupWindow(Gtk.Window):
+
     def __init__(self, on_open_app, settings):
-        super().__init__(type=Gtk.WindowType.POPUP)
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
         self.on_open_app = on_open_app
         self.settings = settings
+        self._fan_controller = None
+        self._active_fan_key = None
+        self._curve_editor = None
+        self._enable_switch = None
+        self._first_show = True
 
-        global _css_applied
-        if not _css_applied:
-            _apply_css()
-            _css_applied = True
+        _apply_css()
 
+        # Window chrome
         self.get_style_context().add_class("sysmon-popup")
         self.set_decorated(False)
+        self.set_resizable(True)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_keep_above(True)
-        self.set_type_hint(Gdk.WindowTypeHint.POPUP_MENU)
-        self.set_resizable(False)
+        self.set_size_request(MIN_W, MIN_H)
+        self.set_default_size(
+            max(MIN_W, settings.popup_w),
+            max(MIN_H, settings.popup_h),
+        )
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        outer.set_margin_start(14)
-        outer.set_margin_end(14)
-        outer.set_margin_top(10)
-        outer.set_margin_bottom(10)
-        self.add(outer)
+        # Restore saved position (done on first map)
+        self.connect("map", self._on_first_map)
+        self.connect("configure-event", self._on_configure)
+        self.connect("focus-out-event", lambda *_: None)   # don't auto-hide
 
-        # Title row
-        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        title_lbl = Gtk.Label(xalign=0)
-        title_lbl.set_markup('<span font="11" weight="bold" color="#cdd6f4">System Monitor</span>')
-        title_row.pack_start(title_lbl, True, True, 0)
-        self._warn_icon = Gtk.Label(label="⚠", xalign=1.0)
-        self._warn_icon.get_style_context().add_class("warn")
-        self._warn_icon.set_no_show_all(True)
-        title_row.pack_start(self._warn_icon, False, False, 0)
-        outer.pack_start(title_row, False, False, 0)
+        # Root layout
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add(root)
 
-        sep = Gtk.Separator()
-        sep.set_margin_top(6)
-        sep.set_margin_bottom(4)
-        outer.pack_start(sep, False, False, 0)
+        root.pack_start(self._build_header(), False, False, 0)
+        root.pack_start(Gtk.Separator(), False, False, 0)
 
-        # Content grid
-        grid = Gtk.Grid()
-        grid.set_column_spacing(12)
-        grid.set_row_spacing(3)
-        outer.pack_start(grid, False, False, 0)
+        # Scrollable content area (hides vertical scrollbar; horizontal never)
+        self._content_scroll = Gtk.ScrolledWindow()
+        self._content_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+        self._content_scroll.set_propagate_natural_height(True)
+        root.pack_start(self._content_scroll, True, True, 0)
 
-        row = [0]
+        self._content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._content_box.set_margin_start(10)
+        self._content_box.set_margin_end(10)
+        self._content_box.set_margin_top(4)
+        self._content_box.set_margin_bottom(6)
+        self._content_scroll.add(self._content_box)
 
-        def add_row(*widgets):
-            for col, w in enumerate(widgets):
-                grid.attach(w, col, row[0], 1, 1)
-            row[0] += 1
+        self._build_metrics()
 
-        def add_section(title):
-            lbl = _section_title(title)
-            lbl.set_margin_top(8)
-            grid.attach(lbl, 0, row[0], 3, 1)
-            row[0] += 1
+        # Fan curve panel (collapsible, sits outside scroll so it can grow)
+        self._curve_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._curve_outer.get_style_context().add_class("curve-panel")
+        self._curve_outer.set_no_show_all(True)
+        root.pack_start(self._curve_outer, False, False, 0)
 
-        # CPU
-        add_section("CPU")
-        self._cpu_pct_lbl = _lbl("--.-% ")
-        self._cpu_pbar = _pbar(0)
-        self._cpu_temp_lbl = _lbl("--°C")
-        add_row(self._cpu_pct_lbl, self._cpu_pbar, self._cpu_temp_lbl)
-
-        self._cpu_freq_lbl = _lbl("")
-        self._cpu_freq_lbl.get_style_context().add_class("section-title")
-        grid.attach(self._cpu_freq_lbl, 0, row[0], 3, 1)
-        row[0] += 1
-
-        # GPU (hidden if no GPU)
-        self._gpu_section = _section_title("GPU")
-        grid.attach(self._gpu_section, 0, row[0], 3, 1)
-        row[0] += 1
-
-        self._gpu_pct_lbl = _lbl("--.-% ")
-        self._gpu_pbar = _pbar(0)
-        self._gpu_temp_lbl = _lbl("--°C")
-        add_row(self._gpu_pct_lbl, self._gpu_pbar, self._gpu_temp_lbl)
-
-        self._gpu_vram_lbl = _lbl("")
-        self._gpu_vram_lbl.get_style_context().add_class("section-title")
-        grid.attach(self._gpu_vram_lbl, 0, row[0], 3, 1)
-        row[0] += 1
-
-        self._gpu_rows = [
-            self._gpu_section, self._gpu_pct_lbl,
-            self._gpu_pbar, self._gpu_temp_lbl, self._gpu_vram_lbl,
-        ]
-
-        # RAM
-        add_section("RAM")
-        self._ram_pct_lbl = _lbl("--.-% ")
-        self._ram_pbar = _pbar(0)
-        self._ram_detail_lbl = _lbl("")
-        add_row(self._ram_pct_lbl, self._ram_pbar, self._ram_detail_lbl)
-
-        self._swap_lbl = _lbl("")
-        self._swap_lbl.get_style_context().add_class("section-title")
-        grid.attach(self._swap_lbl, 0, row[0], 3, 1)
-        row[0] += 1
-
-        # Fan section (built dynamically when fan data arrives)
-        self._fan_section_title = _section_title("Fans")
-        self._fan_section_title.set_no_show_all(True)
-        outer.pack_start(self._fan_section_title, False, False, 0)
-
-        self._fan_rpm_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self._fan_rpm_box.set_no_show_all(True)
-        outer.pack_start(self._fan_rpm_box, False, False, 0)
-
-        # Fan curve editor (compact, shown inline)
-        self._curve_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._curve_toggle = Gtk.ToggleButton(label="Edit Fan Curve ▾")
-        self._curve_toggle.get_style_context().add_class("open-btn")
-        self._curve_toggle.connect("toggled", self._on_curve_toggle)
-        self._curve_header_box.pack_start(self._curve_toggle, False, False, 0)
-        self._curve_header_box.set_no_show_all(True)
-        self._curve_header_box.set_margin_top(4)
-        outer.pack_start(self._curve_header_box, False, False, 0)
-
-        self._curve_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self._curve_panel.set_no_show_all(True)
-        self._curve_panel.set_margin_start(2)
-        self._curve_panel.set_margin_end(2)
-        outer.pack_start(self._curve_panel, False, False, 0)
-
-        self._curve_editor = None          # created lazily
-        self._fan_controller = None        # set by indicator after init
-        self._active_fan_key = None        # which fan the curve applies to
-
-        # Warning area
-        self._warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self._warn_box.set_margin_top(6)
-        self._warn_box.set_no_show_all(True)
-        outer.pack_start(self._warn_box, False, False, 0)
-
-        sep2 = Gtk.Separator()
-        sep2.set_margin_top(8)
-        sep2.set_margin_bottom(6)
-        outer.pack_start(sep2, False, False, 0)
-
-        # Bottom button row
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        open_btn = Gtk.Button(label="Open Full Monitor")
-        open_btn.get_style_context().add_class("open-btn")
-        open_btn.connect("clicked", lambda *_: self.on_open_app())
-        btn_row.pack_end(open_btn, False, False, 0)
-        outer.pack_start(btn_row, False, False, 0)
-
-        self.connect("focus-out-event", lambda *_: self.hide())
+        root.pack_start(Gtk.Separator(), False, False, 0)
+        root.pack_start(self._build_bottom_bar(), False, False, 0)
+        root.pack_start(self._build_grip_row(), False, False, 0)
 
         self.show_all()
         self.hide()
 
-    def _set_pbar(self, pb: Gtk.ProgressBar, pct: float):
-        pb.set_fraction(min(pct / 100.0, 1.0))
-        ctx = pb.get_style_context()
-        ctx.remove_class("warn")
-        ctx.remove_class("crit")
-        if pct >= 90:
-            ctx.add_class("crit")
-        elif pct >= 70:
-            ctx.add_class("warn")
+    # ── Header ────────────────────────────────────────────────────────────────
+
+    def _build_header(self) -> Gtk.Widget:
+        hdr_box = Gtk.EventBox()
+        hdr_box.get_style_context().add_class("popup-header")
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        inner.set_margin_start(4)
+        inner.set_margin_end(4)
+        hdr_box.add(inner)
+
+        # Drag handle (whole header area)
+        hdr_box.connect("button-press-event", self._on_header_drag)
+        hdr_box.connect("enter-notify-event", lambda w, e: (
+            w.get_window().set_cursor(
+                Gdk.Cursor.new_from_name(self.get_display(), "move")
+            ) if w.get_window() else None
+        ))
+        hdr_box.connect("leave-notify-event", lambda w, e: (
+            w.get_window().set_cursor(None) if w.get_window() else None
+        ))
+
+        # Warning icon
+        self._hdr_warn = _lbl("⚠", "val-warn")
+        self._hdr_warn.set_no_show_all(True)
+        inner.pack_start(self._hdr_warn, False, False, 0)
+
+        # Title
+        title = _lbl("System Monitor", "popup-title")
+        inner.pack_start(title, True, True, 0)
+
+        # Close button
+        close_btn = Gtk.Button(label="✕")
+        close_btn.get_style_context().add_class("popup-close")
+        close_btn.set_relief(Gtk.ReliefStyle.NONE)
+        close_btn.connect("clicked", lambda *_: self.hide())
+        inner.pack_end(close_btn, False, False, 0)
+
+        return hdr_box
+
+    def _on_header_drag(self, widget, event):
+        if event.button == 1:
+            self.begin_move_drag(
+                event.button,
+                int(event.x_root),
+                int(event.y_root),
+                event.time,
+            )
+
+    # ── Metrics grid ──────────────────────────────────────────────────────────
+
+    def _build_metrics(self):
+        box = self._content_box
+
+        # ── CPU ────────────────────────────────────────────────────────────
+        box.pack_start(_section_row("CPU"), False, False, 0)
+        self._cpu_grid = self._make_metric_grid()
+        box.pack_start(self._cpu_grid, False, False, 0)
+
+        self._cpu_pbar = _pbar("bar-cpu")
+        self._cpu_pct  = _lbl("", "val", xalign=1.0)
+        self._cpu_temp = _lbl("", "val-ok", xalign=1.0)
+        self._cpu_sub  = _lbl("", "sub")
+        self._cpu_sub.set_ellipsize(Pango.EllipsizeMode.END)
+
+        self._attach_metric(self._cpu_grid,
+                            icon="🖥", bar=self._cpu_pbar,
+                            val=self._cpu_pct, extra=self._cpu_temp)
+        self._cpu_grid.attach(self._cpu_sub, 0, 1, 4, 1)
+
+        # ── GPU ────────────────────────────────────────────────────────────
+        self._gpu_section = _section_row("GPU")
+        self._gpu_section.set_no_show_all(True)
+        box.pack_start(self._gpu_section, False, False, 0)
+
+        self._gpu_grid = self._make_metric_grid()
+        self._gpu_grid.set_no_show_all(True)
+        box.pack_start(self._gpu_grid, False, False, 0)
+
+        self._gpu_pbar = _pbar("bar-gpu")
+        self._gpu_pct  = _lbl("", "val", xalign=1.0)
+        self._gpu_temp = _lbl("", "val-ok", xalign=1.0)
+        self._gpu_sub  = _lbl("", "sub")
+        self._gpu_sub.set_ellipsize(Pango.EllipsizeMode.END)
+
+        self._attach_metric(self._gpu_grid,
+                            icon="🎮", bar=self._gpu_pbar,
+                            val=self._gpu_pct, extra=self._gpu_temp)
+        self._gpu_grid.attach(self._gpu_sub, 0, 1, 4, 1)
+
+        # ── RAM ────────────────────────────────────────────────────────────
+        box.pack_start(_section_row("Memory"), False, False, 0)
+        self._ram_grid = self._make_metric_grid()
+        box.pack_start(self._ram_grid, False, False, 0)
+
+        self._ram_pbar = _pbar("bar-ram")
+        self._ram_pct  = _lbl("", "val", xalign=1.0)
+        self._ram_sub  = _lbl("", "sub")
+        self._ram_sub.set_ellipsize(Pango.EllipsizeMode.END)
+
+        self._attach_metric(self._ram_grid,
+                            icon="🧠", bar=self._ram_pbar, val=self._ram_pct)
+        self._ram_grid.attach(self._ram_sub, 0, 1, 4, 1)
+
+        # ── Fans ───────────────────────────────────────────────────────────
+        self._fan_section = _section_row("Fans")
+        self._fan_section.set_no_show_all(True)
+        box.pack_start(self._fan_section, False, False, 0)
+
+        self._fan_rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self._fan_rows_box.set_no_show_all(True)
+        box.pack_start(self._fan_rows_box, False, False, 0)
+
+        # ── Warnings ───────────────────────────────────────────────────────
+        self._warn_sep = Gtk.Separator()
+        self._warn_sep.set_margin_top(6)
+        self._warn_sep.set_no_show_all(True)
+        box.pack_start(self._warn_sep, False, False, 0)
+
+        self._warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._warn_box.set_margin_top(3)
+        self._warn_box.set_no_show_all(True)
+        box.pack_start(self._warn_box, False, False, 0)
+
+    def _make_metric_grid(self) -> Gtk.Grid:
+        g = Gtk.Grid()
+        g.set_column_spacing(6)
+        g.set_row_spacing(2)
+        g.set_margin_bottom(2)
+        return g
+
+    def _attach_metric(self, grid, icon, bar, val, extra=None):
+        """
+        Row 0: [icon lbl (fixed)] [progress bar (hexpand)] [val lbl] [extra lbl]
+        """
+        icon_lbl = _lbl(icon, "sub")
+        icon_lbl.set_size_request(16, -1)
+        grid.attach(icon_lbl, 0, 0, 1, 1)
+        grid.attach(bar, 1, 0, 1, 1)
+        val.set_size_request(50, -1)
+        grid.attach(val, 2, 0, 1, 1)
+        if extra:
+            extra.set_size_request(46, -1)
+            grid.attach(extra, 3, 0, 1, 1)
+
+    # ── Bottom bar ────────────────────────────────────────────────────────────
+
+    def _build_bottom_bar(self) -> Gtk.Widget:
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.set_margin_start(8)
+        bar.set_margin_end(8)
+        bar.set_margin_top(5)
+        bar.set_margin_bottom(5)
+
+        self._curve_toggle = Gtk.ToggleButton(label="Fan Curve ▾")
+        self._curve_toggle.get_style_context().add_class("btn-curve")
+        self._curve_toggle.set_no_show_all(True)
+        self._curve_toggle.connect("toggled", self._on_curve_toggle)
+        bar.pack_start(self._curve_toggle, False, False, 0)
+
+        open_btn = Gtk.Button(label="Open Full Monitor")
+        open_btn.get_style_context().add_class("btn-action")
+        open_btn.connect("clicked", lambda *_: (self.on_open_app(), None)[1])
+        bar.pack_end(open_btn, False, False, 0)
+
+        return bar
+
+    # ── Resize grip ───────────────────────────────────────────────────────────
+
+    def _build_grip_row(self) -> Gtk.Widget:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.pack_start(Gtk.Box(), True, True, 0)   # spacer
+
+        grip = Gtk.EventBox()
+        grip_lbl = _lbl("⊡", "resize-grip", xalign=1.0)
+        grip.add(grip_lbl)
+        grip.set_size_request(22, 14)
+
+        grip.connect("enter-notify-event", lambda w, e: (
+            w.get_window().set_cursor(
+                Gdk.Cursor.new_from_name(self.get_display(), "se-resize")
+            ) if w.get_window() else None
+        ))
+        grip.connect("leave-notify-event", lambda w, e: (
+            w.get_window().set_cursor(None) if w.get_window() else None
+        ))
+        grip.connect("button-press-event", self._on_grip_drag)
+        grip.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
+
+        row.pack_end(grip, False, False, 0)
+        return row
+
+    def _on_grip_drag(self, widget, event):
+        if event.button == 1:
+            self.begin_resize_drag(
+                Gdk.WindowEdge.SOUTH_EAST,
+                event.button,
+                int(event.x_root),
+                int(event.y_root),
+                event.time,
+            )
+
+    # ── Position / size persistence ───────────────────────────────────────────
+
+    def _on_first_map(self, *_):
+        if self._first_show:
+            self._first_show = False
+            x, y = self.settings.popup_x, self.settings.popup_y
+            if x >= 0 and y >= 0:
+                self.move(x, y)
+            else:
+                self._default_position()
+
+    def _default_position(self):
+        screen = Gdk.Screen.get_default()
+        w, _ = self.get_size()
+        self.move(screen.get_width() - w - 8, 40)
+
+    def _on_configure(self, win, event):
+        x, y = self.get_position()
+        w, h = self.get_size()
+        # Clamp to minimum before saving
+        if w < MIN_W or h < MIN_H:
+            return
+        s = self.settings
+        s.popup_x = x
+        s.popup_y = y
+        s.popup_w = w
+        s.popup_h = h
+        s.save()
+
+    # ── Data update ───────────────────────────────────────────────────────────
 
     def update(self, s: SystemStats):
         cfg = self.settings
 
+        # CPU
         if cfg.show_cpu:
-            self._cpu_pct_lbl.set_text(f"{s.cpu_percent:5.1f}% ")
-            self._set_pbar(self._cpu_pbar, s.cpu_percent)
+            _update_pbar(self._cpu_pbar, s.cpu_percent, "bar-cpu")
+            self._cpu_pct.set_text(f"{s.cpu_percent:5.1f}%")
+
             if cfg.show_temp and s.cpu_temp > 0:
-                color = "#f38ba8" if s.cpu_temp > cfg.warn_cpu_temp else "#a6e3a1"
-                self._cpu_temp_lbl.set_markup(
-                    f'<span color="{color}">{s.cpu_temp:.0f}°C</span>'
-                )
+                cls = "val-warn" if s.cpu_temp > cfg.warn_cpu_temp else "val-ok"
+                _set_css_classes(self._cpu_temp, ["val-warn", "val-ok"], cls)
+                self._cpu_temp.set_text(f"{s.cpu_temp:.0f}°C")
             else:
-                self._cpu_temp_lbl.set_text("")
-            if s.cpu_freq_mhz > 0:
-                throttle = " ⚡throttled" if s.thermal_throttling else ""
-                self._cpu_freq_lbl.set_text(
-                    f"  {s.cpu_freq_mhz:.0f} / {s.cpu_freq_max_mhz:.0f} MHz{throttle}"
-                )
+                self._cpu_temp.set_text("")
 
+            throttle = " ⚡" if s.thermal_throttling else ""
+            freq = f"{s.cpu_freq_mhz:.0f}/{s.cpu_freq_max_mhz:.0f}MHz{throttle}" \
+                   if s.cpu_freq_mhz > 0 else ""
+            self._cpu_sub.set_text(freq)
+
+        # GPU
         if cfg.show_gpu and s.gpu_available:
-            for w in self._gpu_rows:
-                w.set_visible(True)
-            self._gpu_pct_lbl.set_text(f"{s.gpu_percent:5.1f}% ")
-            self._set_pbar(self._gpu_pbar, s.gpu_percent)
+            self._gpu_section.set_visible(True)
+            self._gpu_grid.set_visible(True)
+            _update_pbar(self._gpu_pbar, s.gpu_percent, "bar-gpu")
+            self._gpu_pct.set_text(f"{s.gpu_percent:5.1f}%")
             if cfg.show_temp and s.gpu_temp > 0:
-                color = "#f38ba8" if s.gpu_temp > cfg.warn_gpu_temp else "#a6e3a1"
-                self._gpu_temp_lbl.set_markup(
-                    f'<span color="{color}">{s.gpu_temp:.0f}°C</span>'
-                )
+                cls = "val-warn" if s.gpu_temp > cfg.warn_gpu_temp else "val-ok"
+                _set_css_classes(self._gpu_temp, ["val-warn", "val-ok"], cls)
+                self._gpu_temp.set_text(f"{s.gpu_temp:.0f}°C")
+            vram = ""
             if s.gpu_mem_total_mb > 0:
-                self._gpu_vram_lbl.set_text(
-                    f"  VRAM {s.gpu_mem_used_mb/1024:.1f} / {s.gpu_mem_total_mb/1024:.1f} GB"
-                    + (f"  {s.gpu_power_w:.0f}W" if s.gpu_power_w > 0 else "")
-                )
+                vram = (f"VRAM {s.gpu_mem_used_mb/1024:.1f}/"
+                        f"{s.gpu_mem_total_mb/1024:.1f}GB")
+            if s.gpu_power_w > 0:
+                vram += f"  {s.gpu_power_w:.0f}W"
+            self._gpu_sub.set_text(vram)
         else:
-            for w in self._gpu_rows:
-                w.set_visible(False)
+            self._gpu_section.set_visible(False)
+            self._gpu_grid.set_visible(False)
 
+        # RAM
         if cfg.show_ram:
-            self._ram_pct_lbl.set_text(f"{s.ram_percent:5.1f}% ")
-            self._set_pbar(self._ram_pbar, s.ram_percent)
-            self._ram_detail_lbl.set_text(
-                f"{s.ram_used_gb:.1f}/{s.ram_total_gb:.1f}GB"
-            )
+            _update_pbar(self._ram_pbar, s.ram_percent, "bar-ram")
+            self._ram_pct.set_text(f"{s.ram_percent:5.1f}%")
+            detail = f"{s.ram_used_gb:.1f}/{s.ram_total_gb:.1f}GB"
             if s.swap_total_gb > 0:
-                self._swap_lbl.set_text(
-                    f"  Swap {s.swap_used_gb:.1f}/{s.swap_total_gb:.1f}GB "
-                    f"({s.swap_percent:.0f}%)"
-                )
+                detail += f"  swap {s.swap_used_gb:.1f}/{s.swap_total_gb:.1f}GB"
+            self._ram_sub.set_text(detail)
+
+        # Fans
+        self._update_fan_rpms(s.fans)
 
         # Warnings
-        for child in self._warn_box.get_children():
-            self._warn_box.remove(child)
+        for c in self._warn_box.get_children():
+            self._warn_box.remove(c)
         if s.warnings:
+            self._warn_sep.set_visible(True)
             self._warn_box.set_visible(True)
-            self._warn_icon.set_visible(True)
+            self._hdr_warn.set_visible(True)
             for w in s.warnings:
                 lbl = Gtk.Label(label=f"⚠  {w}", xalign=0.0)
-                lbl.get_style_context().add_class("warning-text")
+                lbl.get_style_context().add_class("warn-text")
+                lbl.set_ellipsize(Pango.EllipsizeMode.END)
                 self._warn_box.pack_start(lbl, False, False, 0)
                 lbl.show()
         else:
+            self._warn_sep.set_visible(False)
             self._warn_box.set_visible(False)
-            self._warn_icon.set_visible(False)
+            self._hdr_warn.set_visible(False)
 
-        # Fans
-        self._update_fans(s.fans)
-
-    def _update_fans(self, fans):
+    def _update_fan_rpms(self, fans):
         if not fans:
-            self._fan_section_title.set_visible(False)
-            self._fan_rpm_box.set_visible(False)
-            self._curve_header_box.set_visible(False)
+            self._fan_section.set_visible(False)
+            self._fan_rows_box.set_visible(False)
+            self._curve_toggle.set_visible(False)
             return
 
-        self._fan_section_title.set_visible(True)
-        self._fan_rpm_box.set_visible(True)
+        self._fan_section.set_visible(True)
+        self._fan_rows_box.set_visible(True)
 
-        # Rebuild RPM rows only if fan count changed
-        existing = self._fan_rpm_box.get_children()
+        existing = self._fan_rows_box.get_children()
         if len(existing) != len(fans):
             for c in existing:
-                self._fan_rpm_box.remove(c)
+                self._fan_rows_box.remove(c)
             for label, rpm, controllable in fans:
-                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                row.set_margin_start(4)
-                name_lbl = _lbl(f"  {label}", "section-title")
-                name_lbl.set_size_request(120, -1)
-                rpm_lbl = _lbl(f"{rpm} RPM", "value")
-                rpm_lbl.set_size_request(80, -1)
-                pb = Gtk.ProgressBar()
-                pb.set_size_request(80, -1)
-                row.pack_start(name_lbl, False, False, 0)
-                row.pack_start(rpm_lbl, False, False, 0)
-                row.pack_start(pb, False, False, 0)
-                row._rpm_lbl = rpm_lbl
-                row._pb = pb
-                self._fan_rpm_box.pack_start(row, False, False, 0)
+                row = _FanRpmRow(label, rpm)
+                self._fan_rows_box.pack_start(row, False, False, 0)
                 row.show_all()
         else:
-            # Update values in place
             for row, (label, rpm, _) in zip(existing, fans):
-                if hasattr(row, "_rpm_lbl"):
-                    row._rpm_lbl.set_text(f"{rpm} RPM")
-                    max_rpm = 4000
-                    row._pb.set_fraction(min(rpm / max_rpm, 1.0))
+                if isinstance(row, _FanRpmRow):
+                    row.set_rpm(rpm)
 
-        # Show curve editor toggle if any fan is controllable
-        has_controllable = any(c for _, _, c in fans)
-        # Always show if fan controller is attached (even if not yet writable)
         if self._fan_controller is not None:
-            self._curve_header_box.set_visible(True)
+            self._curve_toggle.set_visible(True)
+
+    # ── Fan curve toggle ──────────────────────────────────────────────────────
 
     def _on_curve_toggle(self, btn):
         if btn.get_active():
             btn.set_label("Fan Curve ▴")
             self._build_curve_panel()
-            self._curve_panel.set_visible(True)
-            self._curve_panel.show_all()
+            self._curve_outer.set_visible(True)
+            self._curve_outer.show_all()
         else:
-            btn.set_label("Edit Fan Curve ▾")
-            self._curve_panel.set_visible(False)
-        # Resize popup to fit
-        self.resize(1, 1)
+            btn.set_label("Fan Curve ▾")
+            self._curve_outer.set_visible(False)
 
     def _build_curve_panel(self):
-        # Clear previous contents
-        for c in self._curve_panel.get_children():
-            self._curve_panel.remove(c)
+        for c in self._curve_outer.get_children():
+            self._curve_outer.remove(c)
 
         from .fan_curve_widget import FanCurveEditor
-        from .fans import DEFAULT_CURVE
+        from .fans import DEFAULT_CURVE, check_pwm_writable
 
-        # Fan selector (if multiple fans)
-        if self._fan_controller:
-            fan_keys = list(self._fan_controller._fans.keys())
-            if len(fan_keys) > 1:
-                sel_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                fan_sel = Gtk.ComboBoxText()
-                for key in fan_keys:
-                    fan = self._fan_controller._fans[key]
-                    fan_sel.append(key, fan.label)
-                fan_sel.set_active(0)
-                if not self._active_fan_key:
-                    self._active_fan_key = fan_keys[0]
-                fan_sel.connect("changed", self._on_fan_select)
-                sel_box.pack_start(Gtk.Label(label="Fan:", xalign=0), False, False, 0)
-                sel_box.pack_start(fan_sel, True, True, 0)
-                self._curve_panel.pack_start(sel_box, False, False, 0)
-            elif fan_keys:
-                self._active_fan_key = fan_keys[0]
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        inner.set_margin_start(6)
+        inner.set_margin_end(6)
+        inner.set_margin_top(4)
+        inner.set_margin_bottom(4)
+        self._curve_outer.pack_start(inner, True, True, 0)
 
-            # Load existing curve for selected fan
-            initial = DEFAULT_CURVE
-            if self._active_fan_key:
-                fan = self._fan_controller._fans.get(self._active_fan_key)
-                if fan:
-                    initial = fan.curve
+        if not self._fan_controller:
+            inner.pack_start(_lbl("Fan controller not available.", "sub"), False, False, 0)
+            return
 
-            editor = FanCurveEditor(points=list(initial), compact=True)
-            editor.connect("curve-changed", self._on_curve_changed)
-            self._curve_editor = editor
-            self._curve_panel.pack_start(editor, False, False, 0)
+        fan_keys = list(self._fan_controller._fans.keys())
 
-            # Enable toggle + apply row
-            ctrl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            ctrl_row.set_margin_top(4)
+        # Fan selector if more than one
+        if len(fan_keys) > 1:
+            sel_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            sel_row.pack_start(_lbl("Fan:", "sub"), False, False, 0)
+            fan_sel = Gtk.ComboBoxText()
+            for k in fan_keys:
+                fan_sel.append(k, self._fan_controller._fans[k].label)
+            fan_sel.set_active(0)
+            fan_sel.connect("changed", self._on_fan_select)
+            sel_row.pack_start(fan_sel, True, True, 0)
+            inner.pack_start(sel_row, False, False, 0)
 
-            enable_sw = Gtk.Switch()
-            if self._active_fan_key:
-                enable_sw.set_active(
-                    self._fan_controller.is_active(self._active_fan_key)
-                )
-            enable_sw.connect("notify::active", self._on_enable_toggle)
-            self._enable_switch = enable_sw
+        if not self._active_fan_key and fan_keys:
+            self._active_fan_key = fan_keys[0]
 
-            sw_lbl = Gtk.Label(label="Apply curve", xalign=0.0)
-            sw_lbl.get_style_context().add_class("section-title")
+        # Curve editor
+        initial = DEFAULT_CURVE
+        if self._active_fan_key:
+            fan = self._fan_controller._fans.get(self._active_fan_key)
+            if fan:
+                initial = fan.curve
 
-            reset_btn = Gtk.Button(label="Reset to Auto")
-            reset_btn.get_style_context().add_class("open-btn")
-            reset_btn.connect("clicked", self._on_reset_auto)
+        editor = FanCurveEditor(points=list(initial), compact=True)
+        editor.set_hexpand(True)
+        editor.connect("curve-changed", self._on_curve_changed)
+        self._curve_editor = editor
+        inner.pack_start(editor, True, True, 0)
 
-            ctrl_row.pack_start(sw_lbl, False, False, 0)
-            ctrl_row.pack_start(enable_sw, False, False, 4)
-            ctrl_row.pack_end(reset_btn, False, False, 0)
-            self._curve_panel.pack_start(ctrl_row, False, False, 0)
+        # Controls
+        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        ctrl.set_margin_top(2)
 
-            # Permission warning if not writable
-            from .fans import check_pwm_writable
-            if not check_pwm_writable():
-                warn_lbl = Gtk.Label(
-                    label="⚠ Fan control needs root or udev rule.\nSee README for setup.",
-                    xalign=0.0,
-                )
-                warn_lbl.get_style_context().add_class("warning-text")
-                warn_lbl.set_line_wrap(True)
-                self._curve_panel.pack_start(warn_lbl, False, False, 0)
-        else:
-            # No controller yet
-            lbl = Gtk.Label(label="Fan controller not initialized.", xalign=0.0)
-            lbl.get_style_context().add_class("warning-text")
-            self._curve_panel.pack_start(lbl, False, False, 0)
+        sw_lbl = _lbl("Apply curve", "sub")
+        en_sw = Gtk.Switch()
+        en_sw.set_valign(Gtk.Align.CENTER)
+        if self._active_fan_key:
+            en_sw.set_active(self._fan_controller.is_active(self._active_fan_key))
+        en_sw.connect("notify::active", self._on_enable_toggle)
+        self._enable_switch = en_sw
+
+        reset_btn = Gtk.Button(label="Auto")
+        reset_btn.get_style_context().add_class("btn-curve")
+        reset_btn.set_tooltip_text("Return fan to BIOS automatic control")
+        reset_btn.connect("clicked", self._on_reset_auto)
+
+        ctrl.pack_start(sw_lbl, False, False, 0)
+        ctrl.pack_start(en_sw, False, False, 0)
+        ctrl.pack_end(reset_btn, False, False, 0)
+        inner.pack_start(ctrl, False, False, 0)
+
+        if not check_pwm_writable():
+            w = _lbl("⚠ PWM not writable — run install.sh for udev rule", "warn-text")
+            w.set_ellipsize(Pango.EllipsizeMode.END)
+            inner.pack_start(w, False, False, 0)
 
     def _on_fan_select(self, combo):
         self._active_fan_key = combo.get_active_id()
@@ -484,22 +671,67 @@ class PopupWindow(Gtk.Window):
         if self._fan_controller and self._active_fan_key:
             self._fan_controller.update_curve(self._active_fan_key, points)
 
-    def _on_enable_toggle(self, sw, _param):
+    def _on_enable_toggle(self, sw, _):
         if self._fan_controller and self._active_fan_key:
             self._fan_controller.set_curve_active(self._active_fan_key, sw.get_active())
 
     def _on_reset_auto(self, _):
         if self._fan_controller and self._active_fan_key:
             self._fan_controller.set_curve_active(self._active_fan_key, False)
-            if hasattr(self, "_enable_switch"):
+            if self._enable_switch:
                 self._enable_switch.set_active(False)
 
+    # ── Show ──────────────────────────────────────────────────────────────────
+
     def show_near_top_right(self):
-        screen = Gdk.Screen.get_default()
-        sw = screen.get_width()
+        """Toggle: show at saved/default position, or hide if already visible."""
+        if self.get_visible():
+            self.hide()
+            return
         self.show_all()
         self.present()
-        w, h = self.get_size()
-        margin = 8
-        self.move(sw - w - margin, 32 + margin)
-        self.grab_focus()
+        # Position is handled by _on_first_map on first show;
+        # subsequent shows restore last position via configure-event saved values.
+
+
+# ── Fan RPM row widget ────────────────────────────────────────────────────────
+
+class _FanRpmRow(Gtk.Box):
+    _MAX_RPM = 5000
+
+    def __init__(self, label: str, rpm: int):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._label_str = label
+
+        icon = _lbl("💨", "sub")
+        icon.set_size_request(16, -1)
+        self.pack_start(icon, False, False, 0)
+
+        self._name_lbl = _lbl(label, "sub")
+        self._name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._name_lbl.set_size_request(60, -1)
+        self.pack_start(self._name_lbl, False, False, 0)
+
+        self._pb = Gtk.ProgressBar()
+        self._pb.set_hexpand(True)
+        self._pb.get_style_context().add_class("bar-fan")
+        self.pack_start(self._pb, True, True, 0)
+
+        self._rpm_lbl = _lbl(f"{rpm} RPM", "val", xalign=1.0)
+        self._rpm_lbl.set_size_request(72, -1)
+        self.pack_start(self._rpm_lbl, False, False, 0)
+
+        self.set_rpm(rpm)
+
+    def set_rpm(self, rpm: int):
+        self._rpm_lbl.set_text(f"{rpm} RPM")
+        self._pb.set_fraction(min(rpm / self._MAX_RPM, 1.0))
+
+
+# ── Utility ───────────────────────────────────────────────────────────────────
+
+def _set_css_classes(widget, remove: list, add: str):
+    ctx = widget.get_style_context()
+    for c in remove:
+        ctx.remove_class(c)
+    ctx.add_class(add)

@@ -23,6 +23,11 @@ DEFAULTS = {
     "history_hours": 24,
     "graph_window_sec": 300,
     "dark_popup": True,
+    # Quick-stats popup geometry (persisted across sessions)
+    "popup_x": -1,
+    "popup_y": -1,
+    "popup_w": 340,
+    "popup_h": 420,
 }
 
 

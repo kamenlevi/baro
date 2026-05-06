@@ -167,10 +167,7 @@ class SysMonIndicator:
         return True  # keep timer
 
     def _toggle_popup(self):
-        if self._popup.get_visible():
-            self._popup.hide()
-        else:
-            self._popup.show_near_top_right()
+        self._popup.show_near_top_right()   # handles toggle internally
 
     def _on_tray_click(self, *_):
         self._toggle_popup()
@@ -181,7 +178,6 @@ class SysMonIndicator:
             from .main_window import MainWindow
             self._main_window = MainWindow(app, self.monitor, self.history, self.settings)
         self._main_window.present()
-        self._popup.hide()
 
     def _on_settings(self, *_):
         open_settings_dialog(self.settings, parent=self._main_window)
