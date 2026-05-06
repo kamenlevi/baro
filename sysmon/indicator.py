@@ -37,10 +37,19 @@ class SysMonIndicator:
         self._main_window = None
         self._last_stats = SystemStats()
 
+        # Fan controller
+        from .fans import detect_fans, FanCurveController
+        self._fans = detect_fans()
+        self._fan_controller = FanCurveController(
+            self._fans, lambda: self._last_stats.cpu_temp
+        )
+        self._fan_controller.start()
+
         self._popup = PopupWindow(
             on_open_app=self._show_main_window,
             settings=settings,
         )
+        self._popup._fan_controller = self._fan_controller
 
         if _HAS_INDICATOR:
             self._indicator = AppIndicator.Indicator.new(
@@ -86,6 +95,14 @@ class SysMonIndicator:
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
+        # Enrich fan data with controllable flag from detected fans
+        enriched = [
+            (label, rpm, any(
+                f.controllable for f in self._fans.values() if f.label == label
+            ))
+            for label, rpm, _ in s.fans
+        ]
+        s.fans = enriched if enriched else s.fans
         GLib.idle_add(self._popup.update, s)
         self._maybe_notify(s)
 

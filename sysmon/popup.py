@@ -206,6 +206,35 @@ class PopupWindow(Gtk.Window):
         grid.attach(self._swap_lbl, 0, row[0], 3, 1)
         row[0] += 1
 
+        # Fan section (built dynamically when fan data arrives)
+        self._fan_section_title = _section_title("Fans")
+        self._fan_section_title.set_no_show_all(True)
+        outer.pack_start(self._fan_section_title, False, False, 0)
+
+        self._fan_rpm_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._fan_rpm_box.set_no_show_all(True)
+        outer.pack_start(self._fan_rpm_box, False, False, 0)
+
+        # Fan curve editor (compact, shown inline)
+        self._curve_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._curve_toggle = Gtk.ToggleButton(label="Edit Fan Curve ▾")
+        self._curve_toggle.get_style_context().add_class("open-btn")
+        self._curve_toggle.connect("toggled", self._on_curve_toggle)
+        self._curve_header_box.pack_start(self._curve_toggle, False, False, 0)
+        self._curve_header_box.set_no_show_all(True)
+        self._curve_header_box.set_margin_top(4)
+        outer.pack_start(self._curve_header_box, False, False, 0)
+
+        self._curve_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._curve_panel.set_no_show_all(True)
+        self._curve_panel.set_margin_start(2)
+        self._curve_panel.set_margin_end(2)
+        outer.pack_start(self._curve_panel, False, False, 0)
+
+        self._curve_editor = None          # created lazily
+        self._fan_controller = None        # set by indicator after init
+        self._active_fan_key = None        # which fan the curve applies to
+
         # Warning area
         self._warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self._warn_box.set_margin_top(6)
@@ -304,6 +333,166 @@ class PopupWindow(Gtk.Window):
         else:
             self._warn_box.set_visible(False)
             self._warn_icon.set_visible(False)
+
+        # Fans
+        self._update_fans(s.fans)
+
+    def _update_fans(self, fans):
+        if not fans:
+            self._fan_section_title.set_visible(False)
+            self._fan_rpm_box.set_visible(False)
+            self._curve_header_box.set_visible(False)
+            return
+
+        self._fan_section_title.set_visible(True)
+        self._fan_rpm_box.set_visible(True)
+
+        # Rebuild RPM rows only if fan count changed
+        existing = self._fan_rpm_box.get_children()
+        if len(existing) != len(fans):
+            for c in existing:
+                self._fan_rpm_box.remove(c)
+            for label, rpm, controllable in fans:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                row.set_margin_start(4)
+                name_lbl = _lbl(f"  {label}", "section-title")
+                name_lbl.set_size_request(120, -1)
+                rpm_lbl = _lbl(f"{rpm} RPM", "value")
+                rpm_lbl.set_size_request(80, -1)
+                pb = Gtk.ProgressBar()
+                pb.set_size_request(80, -1)
+                row.pack_start(name_lbl, False, False, 0)
+                row.pack_start(rpm_lbl, False, False, 0)
+                row.pack_start(pb, False, False, 0)
+                row._rpm_lbl = rpm_lbl
+                row._pb = pb
+                self._fan_rpm_box.pack_start(row, False, False, 0)
+                row.show_all()
+        else:
+            # Update values in place
+            for row, (label, rpm, _) in zip(existing, fans):
+                if hasattr(row, "_rpm_lbl"):
+                    row._rpm_lbl.set_text(f"{rpm} RPM")
+                    max_rpm = 4000
+                    row._pb.set_fraction(min(rpm / max_rpm, 1.0))
+
+        # Show curve editor toggle if any fan is controllable
+        has_controllable = any(c for _, _, c in fans)
+        # Always show if fan controller is attached (even if not yet writable)
+        if self._fan_controller is not None:
+            self._curve_header_box.set_visible(True)
+
+    def _on_curve_toggle(self, btn):
+        if btn.get_active():
+            btn.set_label("Fan Curve ▴")
+            self._build_curve_panel()
+            self._curve_panel.set_visible(True)
+            self._curve_panel.show_all()
+        else:
+            btn.set_label("Edit Fan Curve ▾")
+            self._curve_panel.set_visible(False)
+        # Resize popup to fit
+        self.resize(1, 1)
+
+    def _build_curve_panel(self):
+        # Clear previous contents
+        for c in self._curve_panel.get_children():
+            self._curve_panel.remove(c)
+
+        from .fan_curve_widget import FanCurveEditor
+        from .fans import DEFAULT_CURVE
+
+        # Fan selector (if multiple fans)
+        if self._fan_controller:
+            fan_keys = list(self._fan_controller._fans.keys())
+            if len(fan_keys) > 1:
+                sel_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                fan_sel = Gtk.ComboBoxText()
+                for key in fan_keys:
+                    fan = self._fan_controller._fans[key]
+                    fan_sel.append(key, fan.label)
+                fan_sel.set_active(0)
+                if not self._active_fan_key:
+                    self._active_fan_key = fan_keys[0]
+                fan_sel.connect("changed", self._on_fan_select)
+                sel_box.pack_start(Gtk.Label(label="Fan:", xalign=0), False, False, 0)
+                sel_box.pack_start(fan_sel, True, True, 0)
+                self._curve_panel.pack_start(sel_box, False, False, 0)
+            elif fan_keys:
+                self._active_fan_key = fan_keys[0]
+
+            # Load existing curve for selected fan
+            initial = DEFAULT_CURVE
+            if self._active_fan_key:
+                fan = self._fan_controller._fans.get(self._active_fan_key)
+                if fan:
+                    initial = fan.curve
+
+            editor = FanCurveEditor(points=list(initial), compact=True)
+            editor.connect("curve-changed", self._on_curve_changed)
+            self._curve_editor = editor
+            self._curve_panel.pack_start(editor, False, False, 0)
+
+            # Enable toggle + apply row
+            ctrl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            ctrl_row.set_margin_top(4)
+
+            enable_sw = Gtk.Switch()
+            if self._active_fan_key:
+                enable_sw.set_active(
+                    self._fan_controller.is_active(self._active_fan_key)
+                )
+            enable_sw.connect("notify::active", self._on_enable_toggle)
+            self._enable_switch = enable_sw
+
+            sw_lbl = Gtk.Label(label="Apply curve", xalign=0.0)
+            sw_lbl.get_style_context().add_class("section-title")
+
+            reset_btn = Gtk.Button(label="Reset to Auto")
+            reset_btn.get_style_context().add_class("open-btn")
+            reset_btn.connect("clicked", self._on_reset_auto)
+
+            ctrl_row.pack_start(sw_lbl, False, False, 0)
+            ctrl_row.pack_start(enable_sw, False, False, 4)
+            ctrl_row.pack_end(reset_btn, False, False, 0)
+            self._curve_panel.pack_start(ctrl_row, False, False, 0)
+
+            # Permission warning if not writable
+            from .fans import check_pwm_writable
+            if not check_pwm_writable():
+                warn_lbl = Gtk.Label(
+                    label="⚠ Fan control needs root or udev rule.\nSee README for setup.",
+                    xalign=0.0,
+                )
+                warn_lbl.get_style_context().add_class("warning-text")
+                warn_lbl.set_line_wrap(True)
+                self._curve_panel.pack_start(warn_lbl, False, False, 0)
+        else:
+            # No controller yet
+            lbl = Gtk.Label(label="Fan controller not initialized.", xalign=0.0)
+            lbl.get_style_context().add_class("warning-text")
+            self._curve_panel.pack_start(lbl, False, False, 0)
+
+    def _on_fan_select(self, combo):
+        self._active_fan_key = combo.get_active_id()
+        if self._curve_editor and self._fan_controller and self._active_fan_key:
+            fan = self._fan_controller._fans.get(self._active_fan_key)
+            if fan:
+                self._curve_editor.set_points(list(fan.curve))
+
+    def _on_curve_changed(self, editor, points):
+        if self._fan_controller and self._active_fan_key:
+            self._fan_controller.update_curve(self._active_fan_key, points)
+
+    def _on_enable_toggle(self, sw, _param):
+        if self._fan_controller and self._active_fan_key:
+            self._fan_controller.set_curve_active(self._active_fan_key, sw.get_active())
+
+    def _on_reset_auto(self, _):
+        if self._fan_controller and self._active_fan_key:
+            self._fan_controller.set_curve_active(self._active_fan_key, False)
+            if hasattr(self, "_enable_switch"):
+                self._enable_switch.set_active(False)
 
     def show_near_top_right(self):
         screen = Gdk.Screen.get_default()

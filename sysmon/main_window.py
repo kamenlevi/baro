@@ -164,6 +164,7 @@ class MainWindow(Gtk.ApplicationWindow):
         notebook.append_page(self._build_history_tab(), Gtk.Label(label="History"))
         self._proc_tab = ProcessTab()
         notebook.append_page(self._proc_tab, Gtk.Label(label="Processes"))
+        notebook.append_page(self._build_fans_tab(), Gtk.Label(label="Fans"))
 
         monitor.add_callback(self._on_stats)
         GLib.timeout_add(2000, self._redraw_graphs)
@@ -367,6 +368,215 @@ class MainWindow(Gtk.ApplicationWindow):
         box.pack_start(g_ram, True, True, 0)
         return box
 
+    # ── Fans tab ─────────────────────────────────────────────────────────────
+
+    def _build_fans_tab(self) -> Gtk.Widget:
+        from .fan_curve_widget import FanCurveEditor
+        from .fans import detect_fans, FanCurveController, DEFAULT_CURVE, check_pwm_writable
+
+        self._fan_channels = detect_fans()
+        self._fan_controller = None
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(8)
+        outer.set_margin_bottom(8)
+        scroll.add(outer)
+
+        if not self._fan_channels:
+            lbl = Gtk.Label(label="No fan sensors detected.\n"
+                            "Install lm-sensors and run: sudo sensors-detect", xalign=0.0)
+            lbl.get_style_context().add_class("unit")
+            outer.pack_start(lbl, False, False, 0)
+            return scroll
+
+        # ── Fan RPM live readouts ─────────────────────────────────────────
+        rpm_frame_inner = Gtk.Grid()
+        rpm_frame_inner.set_column_spacing(16)
+        rpm_frame_inner.set_row_spacing(6)
+        rpm_frame_inner.set_margin_start(8)
+        rpm_frame_inner.set_margin_end(8)
+        rpm_frame_inner.set_margin_top(6)
+        rpm_frame_inner.set_margin_bottom(8)
+
+        self._fan_rpm_widgets = {}   # key → (rpm_lbl, pb, rpm_pct_lbl)
+        for row_i, (key, fan) in enumerate(self._fan_channels.items()):
+            name_lbl = Gtk.Label(label=fan.label, xalign=0.0)
+            name_lbl.get_style_context().add_class("metric")
+            name_lbl.set_size_request(160, -1)
+
+            rpm_lbl = _metric_label(f"{fan.rpm} RPM")
+            rpm_lbl.set_size_request(90, -1)
+
+            pb = Gtk.ProgressBar()
+            pb.set_fraction(0.0)
+            pb.set_size_request(200, -1)
+            pb.get_style_context().add_class("green")
+
+            pct_lbl = _metric_label("0%")
+            pct_lbl.set_size_request(40, -1)
+
+            ctrl_lbl = Gtk.Label(
+                label="✓ controllable" if fan.controllable else "read-only",
+                xalign=0.0
+            )
+            ctrl_lbl.get_style_context().add_class("unit")
+
+            rpm_frame_inner.attach(name_lbl, 0, row_i, 1, 1)
+            rpm_frame_inner.attach(rpm_lbl,  1, row_i, 1, 1)
+            rpm_frame_inner.attach(pb,       2, row_i, 1, 1)
+            rpm_frame_inner.attach(pct_lbl,  3, row_i, 1, 1)
+            rpm_frame_inner.attach(ctrl_lbl, 4, row_i, 1, 1)
+
+            self._fan_rpm_widgets[key] = (rpm_lbl, pb, pct_lbl)
+
+        outer.pack_start(_framed("Live Fan Speeds", rpm_frame_inner), False, False, 0)
+
+        # ── RPM history graph ─────────────────────────────────────────────
+        series = []
+        graph_colors = ["#89b4fa", "#a6e3a1", "#fab387", "#cba6f7", "#f38ba8"]
+        for i, (key, fan) in enumerate(list(self._fan_channels.items())[:5]):
+            series.append((key, fan.label, graph_colors[i % len(graph_colors)]))
+
+        g_fans = RollingGraph(
+            "Fan RPM History",
+            series,
+            y_label="RPM",
+            y_max=5000,
+            window_sec=self.settings.graph_window_sec,
+            height_px=180,
+        )
+        self._graphs["fans"] = g_fans
+        outer.pack_start(g_fans, False, False, 0)
+
+        # ── Fan curve editor ──────────────────────────────────────────────
+        controllable = [k for k, f in self._fan_channels.items() if f.controllable]
+
+        curve_frame_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        curve_frame_inner.set_margin_start(8)
+        curve_frame_inner.set_margin_end(8)
+        curve_frame_inner.set_margin_top(6)
+        curve_frame_inner.set_margin_bottom(8)
+
+        if not check_pwm_writable():
+            warn_lbl = Gtk.Label(xalign=0.0)
+            warn_lbl.set_markup(
+                '<span color="#fab387">⚠  Fan PWM control requires write access to '
+                '/sys/class/hwmon/hwmon*/pwm*\n'
+                'Run install.sh to add the udev rule, then log out and back in.</span>'
+            )
+            warn_lbl.set_line_wrap(True)
+            curve_frame_inner.pack_start(warn_lbl, False, False, 0)
+
+        if not controllable:
+            no_ctrl_lbl = Gtk.Label(
+                label="No controllable fans detected on this system.\n"
+                      "Only BIOS-exposed PWM fans can be controlled.",
+                xalign=0.0
+            )
+            no_ctrl_lbl.get_style_context().add_class("unit")
+            no_ctrl_lbl.set_line_wrap(True)
+            curve_frame_inner.pack_start(no_ctrl_lbl, False, False, 0)
+        else:
+            # Fan selector
+            if len(controllable) > 1:
+                sel_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                sel_row.pack_start(Gtk.Label(label="Fan:", xalign=0), False, False, 0)
+                self._fan_sel = Gtk.ComboBoxText()
+                for k in controllable:
+                    self._fan_sel.append(k, self._fan_channels[k].label)
+                self._fan_sel.set_active(0)
+                self._fan_sel.connect("changed", self._on_fan_tab_select)
+                sel_row.pack_start(self._fan_sel, False, False, 0)
+                curve_frame_inner.pack_start(sel_row, False, False, 0)
+            else:
+                self._fan_sel = None
+
+            self._active_fan_tab_key = controllable[0]
+
+            # Build controller shared with popup
+            self._fan_controller = FanCurveController(
+                self._fan_channels, lambda: self.monitor.get_stats().cpu_temp
+            )
+            self._fan_controller.start()
+            # Share with popup if it exists
+            if hasattr(self, '_popup_ref') and self._popup_ref:
+                self._popup_ref._fan_controller = self._fan_controller
+
+            # Curve editor widget (full size)
+            initial = self._fan_channels[self._active_fan_tab_key].curve
+            self._fan_curve_editor = FanCurveEditor(
+                points=list(initial),
+                on_change=self._on_fan_curve_changed,
+                compact=False,
+            )
+            curve_frame_inner.pack_start(self._fan_curve_editor, False, False, 0)
+
+            # Controls row
+            ctrl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            ctrl_row.set_margin_top(4)
+
+            enable_lbl = Gtk.Label(label="Apply this curve:", xalign=0.0)
+            self._fan_enable_sw = Gtk.Switch()
+            self._fan_enable_sw.connect("notify::active", self._on_fan_enable_toggle)
+
+            reset_btn = Gtk.Button(label="Reset to Default")
+            reset_btn.connect("clicked", self._on_fan_reset_default)
+
+            auto_btn = Gtk.Button(label="Return to Auto (BIOS)")
+            auto_btn.connect("clicked", self._on_fan_reset_auto)
+
+            ctrl_row.pack_start(enable_lbl, False, False, 0)
+            ctrl_row.pack_start(self._fan_enable_sw, False, False, 0)
+            ctrl_row.pack_end(auto_btn, False, False, 0)
+            ctrl_row.pack_end(reset_btn, False, False, 0)
+            curve_frame_inner.pack_start(ctrl_row, False, False, 0)
+
+            note_lbl = Gtk.Label(
+                label="Note: curve is applied while SysMon is running. "
+                      "Closing SysMon returns fans to BIOS auto control.",
+                xalign=0.0
+            )
+            note_lbl.get_style_context().add_class("unit")
+            note_lbl.set_line_wrap(True)
+            curve_frame_inner.pack_start(note_lbl, False, False, 0)
+
+        outer.pack_start(_framed("Fan Curve Editor", curve_frame_inner), False, False, 0)
+        return scroll
+
+    def _on_fan_tab_select(self, combo):
+        key = combo.get_active_id()
+        self._active_fan_tab_key = key
+        fan = self._fan_channels.get(key)
+        if fan and hasattr(self, "_fan_curve_editor"):
+            self._fan_curve_editor.set_points(list(fan.curve))
+            if hasattr(self, "_fan_enable_sw") and self._fan_controller:
+                self._fan_enable_sw.set_active(self._fan_controller.is_active(key))
+
+    def _on_fan_curve_changed(self, points):
+        if self._fan_controller and hasattr(self, "_active_fan_tab_key"):
+            self._fan_controller.update_curve(self._active_fan_tab_key, points)
+
+    def _on_fan_enable_toggle(self, sw, _):
+        if self._fan_controller and hasattr(self, "_active_fan_tab_key"):
+            self._fan_controller.set_curve_active(self._active_fan_tab_key, sw.get_active())
+
+    def _on_fan_reset_default(self, _):
+        from .fans import DEFAULT_CURVE
+        if hasattr(self, "_fan_curve_editor"):
+            self._fan_curve_editor.set_points(list(DEFAULT_CURVE))
+        if self._fan_controller and hasattr(self, "_active_fan_tab_key"):
+            self._fan_controller.update_curve(self._active_fan_tab_key, list(DEFAULT_CURVE))
+
+    def _on_fan_reset_auto(self, _):
+        if self._fan_controller and hasattr(self, "_active_fan_tab_key"):
+            self._fan_controller.set_curve_active(self._active_fan_tab_key, False)
+            if hasattr(self, "_fan_enable_sw"):
+                self._fan_enable_sw.set_active(False)
+
     # ── History tab ─────────────────────────────────────────────────────────
 
     def _build_history_tab(self) -> Gtk.Widget:
@@ -542,6 +752,24 @@ class MainWindow(Gtk.ApplicationWindow):
             self._graphs["gpu_temp"].push(t, {"gpu_temp": s.gpu_temp})
         if "ram" in self._graphs:
             self._graphs["ram"].push(t, {"ram": s.ram_percent, "swap": s.swap_percent})
+
+        # Fans: update live RPM labels + graph
+        if s.fans and hasattr(self, "_fan_rpm_widgets"):
+            fan_vals = {}
+            max_rpm = 5000
+            for (label, rpm, _), (key, _fan_ch) in zip(
+                s.fans, list(getattr(self, "_fan_channels", {}).items())
+            ):
+                widgets = self._fan_rpm_widgets.get(key)
+                if widgets:
+                    rpm_lbl, pb, pct_lbl = widgets
+                    rpm_lbl.set_text(f"{rpm} RPM")
+                    frac = min(rpm / max_rpm, 1.0)
+                    pb.set_fraction(frac)
+                    pct_lbl.set_text(f"{frac*100:.0f}%")
+                fan_vals[key] = float(rpm)
+            if "fans" in self._graphs:
+                self._graphs["fans"].push(t, fan_vals)
 
     def _redraw_graphs(self):
         for g in self._graphs.values():

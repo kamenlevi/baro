@@ -39,6 +39,9 @@ class SystemStats:
     thermal_throttling: bool = False
     warnings: List[str] = field(default_factory=list)
 
+    # Fan data: list of (label, rpm, controllable) tuples — lightweight for UI
+    fans: List[tuple] = field(default_factory=list)
+
     def clone(self):
         import copy
         return copy.deepcopy(self)
@@ -273,6 +276,16 @@ class SystemMonitor:
                 s.warnings.append(f"GPU temp critical: {s.gpu_temp:.0f}°C")
             if s.gpu_mem_percent > 90:
                 s.warnings.append(f"GPU VRAM critical: {s.gpu_mem_percent:.0f}%")
+
+        # Fans
+        try:
+            fan_data = psutil.sensors_fans()
+            for hw_label, entries in fan_data.items():
+                for e in entries:
+                    label = e.label or hw_label
+                    s.fans.append((label, int(e.current), False))
+        except Exception:
+            pass
 
         return s
 

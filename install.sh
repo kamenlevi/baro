@@ -34,6 +34,18 @@ pip3 install --user psutil pynvml pycairo
 echo "[2b] Configuring lm-sensors (answer yes to all prompts)..."
 sudo sensors-detect --auto 2>/dev/null || true
 
+# Fan PWM udev rule — grants current user write access to hwmon PWM files
+echo "[2c] Installing fan PWM udev rule for user: $USER..."
+UDEV_RULE=/etc/udev/rules.d/60-sysmon-fancontrol.rules
+sudo tee "$UDEV_RULE" > /dev/null << UDEV
+# SysMon: allow $USER to control fan PWM without root
+SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/bin/sh -c 'chown $USER /sys/%p/pwm* /sys/%p/pwm*_enable 2>/dev/null; chmod 664 /sys/%p/pwm* /sys/%p/pwm*_enable 2>/dev/null'"
+UDEV
+sudo udevadm control --reload-rules 2>/dev/null || true
+sudo udevadm trigger 2>/dev/null || true
+echo "    udev rule written to $UDEV_RULE"
+echo "    Fan control will be active after your next login (or reboot)."
+
 # Install app
 echo "[3/4] Installing SysMon..."
 INSTALL_DIR="$HOME/.local/lib/sysmon"
