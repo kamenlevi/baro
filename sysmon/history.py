@@ -12,6 +12,7 @@ class HistoryDB:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.max_age_hours = max_age_hours
+        self._last_prune = 0.0
         self._create_tables()
 
     def _create_tables(self):
@@ -39,7 +40,12 @@ class HistoryDB:
             ),
         )
         self.conn.commit()
-        self._prune()
+        # Pruning is range-scan + index churn. Doing it on every record
+        # (every ~5s) is wasteful — once a minute is plenty.
+        now = time.time()
+        if now - self._last_prune >= 60.0:
+            self._last_prune = now
+            self._prune()
 
     def _prune(self):
         cutoff = time.time() - self.max_age_hours * 3600

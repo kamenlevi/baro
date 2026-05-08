@@ -130,11 +130,16 @@ def _framed(title: str, child: Gtk.Widget) -> Gtk.Frame:
 
 
 class MainWindow(Gtk.ApplicationWindow):
-    def __init__(self, app, monitor, history, settings):
+    def __init__(self, app, monitor, history, settings,
+                 fan_channels=None, fan_controller=None):
         super().__init__(application=app, title="SysMon – System Monitor")
         self.monitor = monitor
         self.history = history
         self.settings = settings
+        # Optional — shared with the tray indicator so we don't spawn a
+        # second fan controller thread that fights for PWM control.
+        self._shared_fan_channels = fan_channels
+        self._shared_fan_controller = fan_controller
 
         _apply_css()
         self.get_style_context().add_class("main-win")
@@ -374,8 +379,10 @@ class MainWindow(Gtk.ApplicationWindow):
         from .fan_curve_widget import FanCurveEditor
         from .fans import detect_fans, FanCurveController, DEFAULT_CURVE, check_pwm_writable
 
-        self._fan_channels = detect_fans()
-        self._fan_controller = None
+        # Reuse the indicator's fan channels + controller when available so
+        # there's a single source of truth (and a single PWM writer).
+        self._fan_channels = self._shared_fan_channels or detect_fans()
+        self._fan_controller = self._shared_fan_controller
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -497,14 +504,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
             self._active_fan_tab_key = controllable[0]
 
-            # Build controller shared with popup
-            self._fan_controller = FanCurveController(
-                self._fan_channels, lambda: self.monitor.get_stats().cpu_temp
-            )
-            self._fan_controller.start()
-            # Share with popup if it exists
-            if hasattr(self, '_popup_ref') and self._popup_ref:
-                self._popup_ref._fan_controller = self._fan_controller
+            # Only build a controller if one wasn't passed in by the indicator.
+            if self._fan_controller is None:
+                self._fan_controller = FanCurveController(
+                    self._fan_channels, lambda: self.monitor.get_stats().cpu_temp
+                )
+                self._fan_controller.start()
 
             # Curve editor widget (full size)
             initial = self._fan_channels[self._active_fan_tab_key].curve
@@ -621,6 +626,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # ── Overview: top processes ──────────────────────────────────────────────
 
     def _refresh_overview_procs(self) -> bool:
+        # Skip the process scan + UI update entirely when the window is hidden.
+        if not self.get_visible():
+            return True
         import threading
         threading.Thread(target=self._fetch_overview_procs, daemon=True).start()
         return True  # keep GLib timer
@@ -670,7 +678,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # ── Data update ─────────────────────────────────────────────────────────
 
     def _on_stats(self, s: SystemStats):
-        GLib.idle_add(self._update_ui, s)
+        # UI updates only matter while the window is visible.
+        if self.get_visible():
+            GLib.idle_add(self._update_ui, s)
         now = time.time()
         if now - self._last_history_record >= 5.0:
             self.history.record(s)
@@ -772,6 +782,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._graphs["fans"].push(t, fan_vals)
 
     def _redraw_graphs(self):
+        # No point burning CPU on matplotlib redraws while the window is hidden.
+        if not self.get_visible():
+            return True
         for g in self._graphs.values():
             g.redraw()
         return True  # keep timer running

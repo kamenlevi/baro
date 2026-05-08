@@ -340,6 +340,13 @@ class ProcessTab(Gtk.Box):
         )
 
     def _auto_refresh(self) -> bool:
+        # Don't fire off a 30-process scan thread while the tab is offscreen
+        # (e.g. main window hidden, or a different tab is active).
+        top = self.get_toplevel()
+        if top is not None and not top.get_visible():
+            return True
+        if hasattr(self, "is_drawable") and not self.is_drawable():
+            return True
         self._do_refresh()
         return True
 

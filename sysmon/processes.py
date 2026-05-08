@@ -163,18 +163,12 @@ def _describe(proc_name: str, cmdline: List[str], count: int) -> str:
     parts = []
 
     if count > 1:
-        # Browser / electron: count renderer tabs
-        renderer_count = 0
-        for _ in range(count - 1):
-            renderer_count += 1
         if proc_name in {"chrome", "chromium", "chromium-browser", "google-chrome",
                          "google-chrome-stable", "brave-browser", "brave",
                          "microsoft-edge", "msedge", "opera", "vivaldi-bin"}:
-            parts.append(f"~{renderer_count} tab(s)/processes")
+            parts.append(f"~{count - 1} tab(s)/processes")
         elif proc_name in {"code", "code-oss", "electron", "slack", "discord"}:
             parts.append(f"{count} processes (Electron)")
-        elif proc_name in {"firefox"}:
-            parts.append(f"{count} processes")
         else:
             parts.append(f"{count} processes")
 

@@ -472,7 +472,19 @@ class PopupWindow(Gtk.Window):
         s.popup_y = y
         s.popup_w = w
         s.popup_h = h
-        s.save()
+        # Debounce: configure-event fires for every pixel of a drag/resize.
+        # Coalesce into one disk write 400ms after the gesture stops.
+        if getattr(self, "_save_handle", 0):
+            GLib.source_remove(self._save_handle)
+        self._save_handle = GLib.timeout_add(400, self._flush_settings)
+
+    def _flush_settings(self):
+        self._save_handle = 0
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+        return False  # one-shot
 
     # ── Data update ───────────────────────────────────────────────────────────
 

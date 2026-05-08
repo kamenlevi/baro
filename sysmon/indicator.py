@@ -40,6 +40,11 @@ class SysMonIndicator:
         # Fan controller
         from .fans import detect_fans, FanCurveController
         self._fans = detect_fans()
+        # label → controllable, computed once. Used to enrich every stats
+        # tick without an O(n*m) scan of detected fans.
+        self._fan_controllable_by_label = {
+            f.label: f.controllable for f in self._fans.values()
+        }
         self._fan_controller = FanCurveController(
             self._fans, lambda: self._last_stats.cpu_temp
         )
@@ -95,15 +100,17 @@ class SysMonIndicator:
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
-        # Enrich fan data with controllable flag from detected fans
-        enriched = [
-            (label, rpm, any(
-                f.controllable for f in self._fans.values() if f.label == label
-            ))
-            for label, rpm, _ in s.fans
-        ]
-        s.fans = enriched if enriched else s.fans
-        GLib.idle_add(self._popup.update, s)
+        # Enrich fan data with controllable flag from detected fans (O(n)).
+        if s.fans:
+            ctrl_by_label = self._fan_controllable_by_label
+            s.fans = [
+                (label, rpm, ctrl_by_label.get(label, False))
+                for label, rpm, _ in s.fans
+            ]
+        # Don't bother updating the popup when it's hidden — saves a marshalled
+        # idle callback plus a full GTK widget tree update every tick.
+        if self._popup.get_visible():
+            GLib.idle_add(self._popup.update, s)
         self._maybe_notify(s)
 
     def _maybe_notify(self, s: SystemStats):
@@ -176,7 +183,11 @@ class SysMonIndicator:
         if self._main_window is None:
             app = _DummyApp()
             from .main_window import MainWindow
-            self._main_window = MainWindow(app, self.monitor, self.history, self.settings)
+            self._main_window = MainWindow(
+                app, self.monitor, self.history, self.settings,
+                fan_channels=self._fans,
+                fan_controller=self._fan_controller,
+            )
         self._main_window.present()
 
     def _on_settings(self, *_):

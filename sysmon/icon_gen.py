@@ -7,6 +7,8 @@ import cairo
 _ICON_DIR = os.path.join(tempfile.gettempdir(), "sysmon_icons")
 os.makedirs(_ICON_DIR, exist_ok=True)
 _COUNTER = [0]
+_LAST_KEY = [None]
+_LAST_PATH = [None]
 
 
 def _bar_color(pct: float):
@@ -26,6 +28,18 @@ def generate_tray_icon(
     size: int = 22,
 ) -> str:
     """Draw bars for cpu/gpu/ram. Returns path to written PNG."""
+    # Skip rendering when the visible state (rounded percentages + flags) is
+    # unchanged — this happens most ticks at idle and avoids a PNG write.
+    key = (
+        int(round(cpu_pct)),
+        int(round(ram_pct)),
+        int(round(gpu_pct)) if has_gpu else -1,
+        bool(has_warning),
+        size,
+    )
+    if _LAST_KEY[0] == key and _LAST_PATH[0] is not None and os.path.exists(_LAST_PATH[0]):
+        return _LAST_PATH[0]
+
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
     ctx = cairo.Context(surface)
 
@@ -84,6 +98,8 @@ def generate_tray_icon(
     _COUNTER[0] = (_COUNTER[0] + 1) % 2
     path = os.path.join(_ICON_DIR, f"sysmon_icon_{_COUNTER[0]}.png")
     surface.write_to_png(path)
+    _LAST_KEY[0] = key
+    _LAST_PATH[0] = path
     return path
 
 

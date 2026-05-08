@@ -1,10 +1,9 @@
 """System data collection — runs in a background thread."""
 import glob
 import os
-import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Callable
 
 import psutil
@@ -43,8 +42,12 @@ class SystemStats:
     fans: List[tuple] = field(default_factory=list)
 
     def clone(self):
-        import copy
-        return copy.deepcopy(self)
+        return replace(
+            self,
+            cpu_per_core=list(self.cpu_per_core),
+            warnings=list(self.warnings),
+            fans=list(self.fans),
+        )
 
 
 def _read_file(path: str, default="") -> str:
@@ -119,24 +122,25 @@ def _get_cpu_temp() -> float:
     return 0.0
 
 
-def _check_throttling() -> bool:
-    """Detect CPU thermal throttling via cpufreq."""
-    try:
-        cur_files = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq")
-        max_files = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq")
-        if not cur_files or not max_files:
-            return False
-        cur = int(_read_file(cur_files[0]) or 0)
-        max_f = int(_read_file(max_files[0]) or 0)
-        if max_f > 0 and cur > 0 and cur < max_f * 0.75:
-            return True
-    except Exception:
-        pass
-    # Also check Intel's throttle log
-    msr_path = "/sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count"
-    if os.path.exists(msr_path):
-        return True
-    return False
+_THROTTLE_COUNT_GLOB = "/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count"
+
+
+def _read_throttle_total() -> Optional[int]:
+    """Sum of per-core thermal_throttle counters, or None if unavailable."""
+    paths = glob.glob(_THROTTLE_COUNT_GLOB)
+    if not paths:
+        return None
+    total = 0
+    any_read = False
+    for p in paths:
+        raw = _read_file(p)
+        if raw:
+            try:
+                total += int(raw)
+                any_read = True
+            except ValueError:
+                pass
+    return total if any_read else None
 
 
 class SystemMonitor:
@@ -173,6 +177,10 @@ class SystemMonitor:
 
         # Warm up CPU percent measurement
         psutil.cpu_percent(interval=None)
+
+        # Track thermal throttle counter to detect changes (not absolute presence)
+        self._last_throttle_count = _read_throttle_total()
+        self._last_throttle_time = 0.0
 
     def add_callback(self, cb: Callable):
         self._callbacks.append(cb)
@@ -259,8 +267,19 @@ class SystemMonitor:
             except Exception:
                 pass
 
-        # Thermal throttling
-        s.thermal_throttling = _check_throttling()
+        # Thermal throttling: only flag when the kernel counter actually
+        # increased recently (within ~10s of the last bump).
+        cur_throttle = _read_throttle_total()
+        if cur_throttle is not None and self._last_throttle_count is not None:
+            if cur_throttle > self._last_throttle_count:
+                self._last_throttle_time = s.timestamp
+            self._last_throttle_count = cur_throttle
+        elif cur_throttle is not None:
+            self._last_throttle_count = cur_throttle
+        s.thermal_throttling = (
+            self._last_throttle_time > 0
+            and (s.timestamp - self._last_throttle_time) < 10.0
+        )
 
         # Warnings
         if s.thermal_throttling:
