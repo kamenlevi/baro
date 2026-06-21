@@ -1,4 +1,8 @@
-"""Dynamically generate the tray icon as a PNG using Cairo."""
+"""Generate a single STATIC menu-bar icon (a simple bar-chart glyph).
+
+The icon never changes — it does not reflect live usage, never moves and
+never resizes. Live stats live in the dropdown panel instead.
+"""
 import os
 import tempfile
 
@@ -6,67 +10,43 @@ import cairo
 
 _ICON_DIR = os.path.join(tempfile.gettempdir(), "sysmon_icons")
 os.makedirs(_ICON_DIR, exist_ok=True)
-_COUNTER = [0]
-_LAST_KEY = [None]
-_LAST_PATH = [None]
+_PATH = [None]
 
 
-def generate_tray_icon(
-    cpu_pct: float,
-    ram_pct: float,
-    gpu_pct: float = 0.0,
-    has_gpu: bool = False,
-    has_warning: bool = False,
-    size: int = 22,
-) -> str:
-    """Draw bars for cpu/gpu/ram. Returns path to written PNG."""
-    key = (
-        int(round(cpu_pct)),
-        int(round(ram_pct)),
-        int(round(gpu_pct)) if has_gpu else -1,
-        bool(has_warning),
-        size,
-    )
-    if _LAST_KEY[0] == key and _LAST_PATH[0] is not None and os.path.exists(_LAST_PATH[0]):
-        return _LAST_PATH[0]
+def generate_tray_icon(*_args, size: int = 22, **_kwargs) -> str:
+    """Return the path to the static icon, drawing it once and caching it.
+
+    Extra args are accepted and ignored so existing callers keep working.
+    """
+    if _PATH[0] is not None and os.path.exists(_PATH[0]):
+        return _PATH[0]
 
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
     ctx = cairo.Context(surface)
 
+    # Transparent background
     ctx.set_source_rgba(0, 0, 0, 0)
     ctx.paint()
 
-    bars = [cpu_pct, gpu_pct if has_gpu else None, ram_pct]
+    # Three static bars of fixed heights — a recognisable "stats" glyph.
+    # White so it stays visible on the dark Ubuntu top bar.
+    heights = [0.45, 0.85, 0.65]
+    n = len(heights)
+    pad = 3
+    gap = 2
+    bar_w = (size - pad * 2 - gap * (n - 1)) / n
+    base_y = size - pad
 
-    n = len(bars)
-    pad = 1
-    gap = 1
-    total_gap = gap * (n - 1) + pad * 2
-    bar_w = max(2, (size - total_gap) // n)
-
-    for i, pct in enumerate(bars):
+    ctx.set_source_rgba(0.92, 0.92, 0.92, 1.0)
+    for i, h in enumerate(heights):
         x = pad + i * (bar_w + gap)
-        y_bg_top = pad
-        bg_h = size - pad * 2
-
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.25)
-        _rounded_rect(ctx, x, y_bg_top, bar_w, bg_h, 1)
+        bar_h = h * (size - pad * 2)
+        _rounded_rect(ctx, x, base_y - bar_h, bar_w, bar_h, 1.2)
         ctx.fill()
 
-        if pct is None:
-            continue
-
-        bar_h = max(1, int(pct / 100.0 * bg_h))
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.95)
-        y_fill = pad + bg_h - bar_h
-        _rounded_rect(ctx, x, y_fill, bar_w, bar_h, 1)
-        ctx.fill()
-
-    _COUNTER[0] = (_COUNTER[0] + 1) % 2
-    path = os.path.join(_ICON_DIR, f"sysmon_icon_{_COUNTER[0]}.png")
+    path = os.path.join(_ICON_DIR, "sysmon_static.png")
     surface.write_to_png(path)
-    _LAST_KEY[0] = key
-    _LAST_PATH[0] = path
+    _PATH[0] = path
     return path
 
 

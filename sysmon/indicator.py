@@ -78,7 +78,7 @@ class SysMonIndicator:
             self._status_icon.connect("activate", self._on_tray_click)
 
         monitor.add_callback(self._on_stats)
-        GLib.timeout_add(1500, self._update_icon)
+        self._set_static_icon()
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
@@ -112,39 +112,16 @@ class SysMonIndicator:
         except Exception:
             pass
 
-    def _update_icon(self) -> bool:
-        s = self._last_stats
-        has_warn = bool(s.warnings)
-
-        icon_path = generate_tray_icon(
-            cpu_pct=s.cpu_percent,
-            ram_pct=s.ram_percent,
-            gpu_pct=s.gpu_percent if s.gpu_available else 0.0,
-            has_gpu=s.gpu_available and self.settings.show_gpu,
-            has_warning=has_warn,
-        )
-
+    def _set_static_icon(self):
+        """Set the menu-bar icon once. It is static — no live usage, no label."""
+        icon_path = generate_tray_icon()
         if _HAS_INDICATOR:
             import os
             icon_dir = os.path.dirname(icon_path)
             icon_name = os.path.splitext(os.path.basename(icon_path))[0]
             self._indicator.set_icon_theme_path(icon_dir)
             self._indicator.set_icon_full(icon_name, "system monitor")
-
-            if self.settings.show_label:
-                parts = []
-                if self.settings.show_cpu:
-                    parts.append(f"CPU {s.cpu_percent:3.0f}%")
-                if self.settings.show_gpu and s.gpu_available:
-                    parts.append(f"GPU {s.gpu_percent:3.0f}%")
-                if self.settings.show_ram:
-                    parts.append(f"RAM {s.ram_percent:3.0f}%")
-                label = "  ".join(parts)
-                if has_warn:
-                    label = "⚠ " + label
-                self._indicator.set_label(label, label)
-            else:
-                self._indicator.set_label("", "")
+            self._indicator.set_label("", "")
         else:
             try:
                 from gi.repository import GdkPixbuf
@@ -152,8 +129,6 @@ class SysMonIndicator:
                 self._status_icon.set_from_pixbuf(pb)
             except Exception:
                 pass
-
-        return True  # keep timer
 
     def _toggle_popup(self):
         self._popup.show_near_top_right()   # handles toggle internally
