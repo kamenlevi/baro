@@ -69,12 +69,12 @@ progressbar progress {
     border-radius: 3px;
     min-height: 7px;
 }
-progressbar.bar-cpu progress  { background-color: #89b4fa; }
-progressbar.bar-gpu progress  { background-color: #a6e3a1; }
-progressbar.bar-ram progress  { background-color: #cba6f7; }
-progressbar.bar-fan progress  { background-color: #89dceb; }
-progressbar.bar-warn progress { background-color: #fab387; }
-progressbar.bar-crit progress { background-color: #f38ba8; }
+progressbar.bar-cpu progress  { background-color: #7a8394; }
+progressbar.bar-gpu progress  { background-color: #7a8394; }
+progressbar.bar-ram progress  { background-color: #7a8394; }
+progressbar.bar-fan progress  { background-color: #7a8394; }
+progressbar.bar-warn progress { background-color: #7a8394; }
+progressbar.bar-crit progress { background-color: #7a8394; }
 
 /* ---- warning list ---- */
 .warn-text { color: #fab387; font-size: 10px; }
@@ -152,15 +152,6 @@ def _pbar(bar_class="bar-cpu") -> Gtk.ProgressBar:
 def _update_pbar(pb: Gtk.ProgressBar, pct: float,
                  normal_cls: str, warn_pct=70, crit_pct=90):
     pb.set_fraction(min(pct / 100.0, 1.0))
-    ctx = pb.get_style_context()
-    for c in ("bar-cpu", "bar-gpu", "bar-ram", "bar-fan", "bar-warn", "bar-crit"):
-        ctx.remove_class(c)
-    if pct >= crit_pct:
-        ctx.add_class("bar-crit")
-    elif pct >= warn_pct:
-        ctx.add_class("bar-warn")
-    else:
-        ctx.add_class(normal_cls)
 
 
 def _section_row(title: str) -> Gtk.Label:

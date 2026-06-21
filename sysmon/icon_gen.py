@@ -12,11 +12,7 @@ _LAST_PATH = [None]
 
 
 def _bar_color(pct: float):
-    if pct >= 90:
-        return (1.0, 0.22, 0.22)
-    if pct >= 70:
-        return (1.0, 0.68, 0.0)
-    return (0.25, 0.72, 1.0)
+    return (0.78, 0.82, 0.90)
 
 
 def generate_tray_icon(

@@ -65,9 +65,9 @@ class SysMonIndicator:
                 AppIndicator.IndicatorCategory.HARDWARE,
             )
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-            # A menu is required by AppIndicator3, but we make it just toggle
-            # the popup — the first (invisible) item fires on click.
-            self._indicator.set_menu(self._build_passthrough_menu())
+            menu = self._build_passthrough_menu()
+            self._indicator.set_menu(menu)
+            self._indicator.set_secondary_activate_target(menu.get_children()[0])
         else:
             self._status_icon = Gtk.StatusIcon()
             self._status_icon.set_from_icon_name("utilities-system-monitor")
