@@ -23,6 +23,8 @@ DEFAULTS = {
     "history_hours": 24,
     "graph_window_sec": 300,
     "dark_popup": True,
+    # Which view a left-click opens: "menu" (native menu) or "panel".
+    "default_view": "menu",
     # Quick-stats popup geometry (persisted across sessions)
     "popup_x": -1,
     "popup_y": -1,

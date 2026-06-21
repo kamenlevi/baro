@@ -55,12 +55,15 @@ class SysMonIndicator:
         )
         self._fan_controller.start()
 
-        # Big detailed donut panel (opened from a menu entry).
+        # Big detailed donut panel (opened from a menu entry, or directly when
+        # the user makes it their default view).
         self._popup = PopupWindow(
             on_open_app=self._show_main_window,
             settings=settings,
             on_settings=lambda: self._on_settings(),
             on_quit=Gtk.main_quit,
+            on_cores=self._open_cores,
+            on_set_default=self._set_default_view,
         )
         self._popup._fan_controller = self._fan_controller
 
@@ -75,7 +78,8 @@ class SysMonIndicator:
                 AppIndicator.IndicatorCategory.HARDWARE,
             )
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-            self._indicator.set_menu(self._build_menu())
+            self._stats_menu = self._build_menu()
+            self._apply_default_view()
         else:
             self._status_icon = Gtk.StatusIcon()
             self._status_icon.set_from_icon_name("utilities-system-monitor")
@@ -251,6 +255,37 @@ class SysMonIndicator:
     def _open_cores(self):
         self._cores.update(self._last_stats)
         self._cores.present_window()
+
+    # ── Default-view switching (menu vs panel on click) ──────────────────────
+
+    def _apply_default_view(self):
+        if not _HAS_INDICATOR:
+            return
+        if getattr(self.settings, "default_view", "menu") == "panel":
+            if not hasattr(self, "_panel_menu"):
+                self._panel_menu = self._build_panel_menu()
+            self._indicator.set_menu(self._panel_menu)
+        else:
+            self._indicator.set_menu(self._stats_menu)
+
+    def _build_panel_menu(self) -> Gtk.Menu:
+        # A one-item menu that pops down on open and shows the detailed panel,
+        # so a click opens the panel directly when it's the default view.
+        menu = Gtk.Menu()
+        item = Gtk.MenuItem(label="Stats")
+        item.connect("activate", lambda *_: self._open_panel())
+        menu.append(item)
+        menu.show_all()
+        menu.connect("show", lambda m: (m.popdown(), GLib.idle_add(self._open_panel)))
+        return menu
+
+    def _set_default_view(self, panel_default: bool):
+        self.settings.default_view = "panel" if panel_default else "menu"
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+        self._apply_default_view()
 
     # ── Stats callback ───────────────────────────────────────────────────────
 
