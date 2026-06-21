@@ -66,10 +66,11 @@ class SysMonIndicator:
             )
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             menu = Gtk.Menu()
-            item = Gtk.MenuItem(label="Stats")
+            item = Gtk.MenuItem()
             item.connect("activate", lambda *_: self._toggle_popup())
             menu.append(item)
             menu.show_all()
+            menu.connect("show", lambda m: GLib.idle_add(item.activate))
             self._indicator.set_menu(menu)
         else:
             self._status_icon = Gtk.StatusIcon()
