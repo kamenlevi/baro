@@ -66,9 +66,10 @@ class SysMonIndicator:
             )
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             menu = Gtk.Menu()
-            menu.append(Gtk.MenuItem())
+            item = Gtk.MenuItem(label="Stats")
+            item.connect("activate", lambda *_: self._toggle_popup())
+            menu.append(item)
             menu.show_all()
-            menu.connect("show", self._on_menu_show)
             self._indicator.set_menu(menu)
         else:
             self._status_icon = Gtk.StatusIcon()
@@ -77,10 +78,6 @@ class SysMonIndicator:
 
         monitor.add_callback(self._on_stats)
         GLib.timeout_add(1500, self._update_icon)
-
-    def _on_menu_show(self, menu):
-        menu.popdown()
-        GLib.idle_add(self._toggle_popup)
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
