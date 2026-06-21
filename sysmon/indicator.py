@@ -36,6 +36,8 @@ class SysMonIndicator:
         self.settings = settings
         self._main_window = None
         self._last_stats = SystemStats()
+        self._cpu_history = []          # rolling CPU% for the live tray graph
+        self._CPU_HISTORY_LEN = 30
 
         # Fan controller
         from .fans import detect_fans, FanCurveController
@@ -78,10 +80,15 @@ class SysMonIndicator:
             self._status_icon.connect("activate", self._on_tray_click)
 
         monitor.add_callback(self._on_stats)
-        self._set_static_icon()
+        self._update_icon()
+        GLib.timeout_add(1500, self._update_icon)
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
+        # Feed the rolling CPU history for the live tray graph.
+        self._cpu_history.append(s.cpu_percent)
+        if len(self._cpu_history) > self._CPU_HISTORY_LEN:
+            del self._cpu_history[: -self._CPU_HISTORY_LEN]
         # Enrich fan data with controllable flag from detected fans (O(n)).
         if s.fans:
             ctrl_by_label = self._fan_controllable_by_label
@@ -92,7 +99,12 @@ class SysMonIndicator:
         # Don't bother updating the popup when it's hidden — saves a marshalled
         # idle callback plus a full GTK widget tree update every tick.
         if self._popup.get_visible():
-            GLib.idle_add(self._popup.update, s)
+            try:
+                from .processes import collect_top_processes
+                procs = collect_top_processes(5, sort_by="cpu")
+            except Exception:
+                procs = []
+            GLib.idle_add(self._popup.update, s, procs)
         self._maybe_notify(s)
 
     def _maybe_notify(self, s: SystemStats):
@@ -112,9 +124,13 @@ class SysMonIndicator:
         except Exception:
             pass
 
-    def _set_static_icon(self):
-        """Set the menu-bar icon once. It is static — no live usage, no label."""
-        icon_path = generate_tray_icon()
+    def _update_icon(self) -> bool:
+        """Redraw the live menu-bar graph from the rolling CPU history."""
+        s = self._last_stats
+        icon_path = generate_tray_icon(
+            cpu_history=self._cpu_history,
+            ram_pct=s.ram_percent,
+        )
         if _HAS_INDICATOR:
             import os
             icon_dir = os.path.dirname(icon_path)
@@ -129,8 +145,17 @@ class SysMonIndicator:
                 self._status_icon.set_from_pixbuf(pb)
             except Exception:
                 pass
+        return True  # keep the timer running
 
     def _toggle_popup(self):
+        # Pre-fill with current data so the panel never flashes empty.
+        if not self._popup.get_visible():
+            try:
+                from .processes import collect_top_processes
+                procs = collect_top_processes(5, sort_by="cpu")
+            except Exception:
+                procs = []
+            self._popup.update(self._last_stats, procs)
         self._popup.show_near_top_right()   # handles toggle internally
 
     def _on_tray_click(self, *_):
