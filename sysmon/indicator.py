@@ -36,8 +36,6 @@ class SysMonIndicator:
         self.settings = settings
         self._main_window = None
         self._last_stats = SystemStats()
-        self._cpu_history = []          # rolling CPU% for the live tray graph
-        self._CPU_HISTORY_LEN = 30
 
         # Fan controller
         from .fans import detect_fans, FanCurveController
@@ -83,15 +81,12 @@ class SysMonIndicator:
             self._status_icon.connect("activate", self._on_tray_click)
 
         monitor.add_callback(self._on_stats)
-        self._update_icon()
-        GLib.timeout_add(1500, self._update_icon)
+        self._set_static_icon()
+        self._update_label()
+        GLib.timeout_add(1500, self._update_label)
 
     def _on_stats(self, s: SystemStats):
         self._last_stats = s
-        # Feed the rolling CPU history for the live tray graph.
-        self._cpu_history.append(s.cpu_percent)
-        if len(self._cpu_history) > self._CPU_HISTORY_LEN:
-            del self._cpu_history[: -self._CPU_HISTORY_LEN]
         # Enrich fan data with controllable flag from detected fans (O(n)).
         if s.fans:
             ctrl_by_label = self._fan_controllable_by_label
@@ -127,20 +122,15 @@ class SysMonIndicator:
         except Exception:
             pass
 
-    def _update_icon(self) -> bool:
-        """Redraw the live menu-bar graph from the rolling CPU history."""
-        s = self._last_stats
-        icon_path = generate_tray_icon(
-            cpu_history=self._cpu_history,
-            ram_pct=s.ram_percent,
-        )
+    def _set_static_icon(self):
+        """Set the menu-bar icon once. It never changes, so it never blinks."""
+        icon_path = generate_tray_icon()
         if _HAS_INDICATOR:
             import os
             icon_dir = os.path.dirname(icon_path)
             icon_name = os.path.splitext(os.path.basename(icon_path))[0]
             self._indicator.set_icon_theme_path(icon_dir)
             self._indicator.set_icon_full(icon_name, "system monitor")
-            self._indicator.set_label("", "")
         else:
             try:
                 from gi.repository import GdkPixbuf
@@ -148,6 +138,20 @@ class SysMonIndicator:
                 self._status_icon.set_from_pixbuf(pb)
             except Exception:
                 pass
+
+    def _update_label(self) -> bool:
+        """Show live CPU/RAM as fixed-width text — updates without flicker."""
+        if not _HAS_INDICATOR:
+            return True
+        s = self._last_stats
+        # %3.0f keeps the width constant (e.g. "  9%", " 99%", "100%").
+        parts = [f"CPU {s.cpu_percent:3.0f}%"]
+        if self.settings.show_gpu and s.gpu_available:
+            parts.append(f"GPU {s.gpu_percent:3.0f}%")
+        parts.append(f"RAM {s.ram_percent:3.0f}%")
+        label = "  ".join(parts)
+        guide = "  ".join("CPU 100%" for _ in parts)
+        self._indicator.set_label(label, guide)
         return True  # keep the timer running
 
     def _on_menu_show(self, menu):
