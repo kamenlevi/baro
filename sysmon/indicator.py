@@ -79,7 +79,8 @@ class SysMonIndicator:
             it = Gtk.ImageMenuItem(label="")
             it.set_image(Gtk.Image())
             it.set_always_show_image(True)
-            it.set_sensitive(False)        # info row
+            # Sensitive so the label stays crisp (not greyed); clicking it is
+            # harmless (no handler) and just closes the menu.
             menu.append(it)
             return it
 
@@ -96,7 +97,6 @@ class SysMonIndicator:
         self._mi_procs = []
         for _ in range(5):
             it = Gtk.MenuItem(label="")
-            it.set_sensitive(False)
             it.set_no_show_all(True)
             menu.append(it)
             self._mi_procs.append(it)

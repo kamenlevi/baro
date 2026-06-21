@@ -61,11 +61,11 @@ def gen_donut_icon(pct: float, key: str, size: int = 20) -> str:
 
     cx = cy = size / 2.0
     r = size / 2.0 - 2.5
-    lw = 3.0
+    lw = 3.5
 
     # Track ring
     ctx.set_line_width(lw)
-    ctx.set_source_rgba(0.80, 0.80, 0.80, 1.0)
+    ctx.set_source_rgba(0.74, 0.74, 0.74, 1.0)
     ctx.arc(cx, cy, r, 0, 2 * math.pi)
     ctx.stroke()
 
@@ -73,7 +73,7 @@ def gen_donut_icon(pct: float, key: str, size: int = 20) -> str:
     start = -math.pi / 2
     end = start + 2 * math.pi * (pct / 100.0)
     ctx.set_line_cap(cairo.LINE_CAP_ROUND)
-    ctx.set_source_rgba(0.25, 0.25, 0.25, 1.0)
+    ctx.set_source_rgba(0.12, 0.12, 0.12, 1.0)
     ctx.arc(cx, cy, r, start, end)
     ctx.stroke()
 
