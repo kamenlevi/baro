@@ -49,7 +49,7 @@ def generate_tray_icon(
         y_bg_top = pad
         bg_h = size - pad * 2
 
-        ctx.set_source_rgba(0.35, 0.35, 0.35, 0.6)
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.25)
         _rounded_rect(ctx, x, y_bg_top, bar_w, bg_h, 1)
         ctx.fill()
 
@@ -57,7 +57,7 @@ def generate_tray_icon(
             continue
 
         bar_h = max(1, int(pct / 100.0 * bg_h))
-        ctx.set_source_rgba(0.85, 0.85, 0.85, 0.9)
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.95)
         y_fill = pad + bg_h - bar_h
         _rounded_rect(ctx, x, y_fill, bar_w, bar_h, 1)
         ctx.fill()
