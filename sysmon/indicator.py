@@ -67,7 +67,10 @@ class SysMonIndicator:
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             menu = self._build_passthrough_menu()
             self._indicator.set_menu(menu)
-            self._indicator.set_secondary_activate_target(menu.get_children()[0])
+            try:
+                self._indicator.set_secondary_activate_target(menu.get_children()[0])
+            except Exception:
+                pass
         else:
             self._status_icon = Gtk.StatusIcon()
             self._status_icon.set_from_icon_name("utilities-system-monitor")
@@ -142,8 +145,6 @@ class SysMonIndicator:
                     parts.append(f"CPU {s.cpu_percent:3.0f}%")
                 if self.settings.show_gpu and s.gpu_available:
                     parts.append(f"GPU {s.gpu_percent:3.0f}%")
-                else:
-                    parts.append(f"GPU {'—':>3s} ")
                 if self.settings.show_ram:
                     parts.append(f"RAM {s.ram_percent:3.0f}%")
                 label = "  ".join(parts)
