@@ -64,6 +64,10 @@ class SysMonIndicator:
         )
         self._popup._fan_controller = self._fan_controller
 
+        # Live per-core utilization window.
+        from .cores_window import CoresWindow
+        self._cores = CoresWindow()
+
         if _HAS_INDICATOR:
             self._indicator = AppIndicator.Indicator.new(
                 "sysmon",
@@ -125,6 +129,10 @@ class SysMonIndicator:
         panel_item = Gtk.MenuItem(label="Detailed panel…")
         panel_item.connect("activate", lambda *_: self._open_panel())
         menu.append(panel_item)
+
+        cores_item = Gtk.MenuItem(label="CPU / GPU cores…")
+        cores_item.connect("activate", lambda *_: self._open_cores())
+        menu.append(cores_item)
 
         settings_item = Gtk.MenuItem(label="Settings…")
         settings_item.connect("activate", self._on_settings)
@@ -240,6 +248,10 @@ class SysMonIndicator:
             self._popup.update(self._last_stats, procs)
         self._popup.show_near_top_right()
 
+    def _open_cores(self):
+        self._cores.update(self._last_stats)
+        self._cores.present_window()
+
     # ── Stats callback ───────────────────────────────────────────────────────
 
     def _on_stats(self, s: SystemStats):
@@ -258,6 +270,8 @@ class SysMonIndicator:
         GLib.idle_add(self._refresh_menu, s, procs)
         if self._popup.get_visible():
             GLib.idle_add(self._popup.update, s, procs)
+        if self._cores.get_visible():
+            GLib.idle_add(self._cores.update, s)
         self._maybe_notify(s)
 
     def _maybe_notify(self, s: SystemStats):
