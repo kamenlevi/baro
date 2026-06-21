@@ -4,6 +4,7 @@ The icon is drawn once and never changes, so the tray never blinks. Live
 CPU / RAM figures are shown as a text label next to it (see indicator.py),
 which updates without any flicker.
 """
+import math
 import os
 import tempfile
 
@@ -43,6 +44,41 @@ def generate_tray_icon(*_args, size: int = 22, **_kwargs) -> str:
     path = os.path.join(_ICON_DIR, "sysmon_static.png")
     surface.write_to_png(path)
     _PATH[0] = path
+    return path
+
+
+def gen_donut_icon(pct: float, key: str, size: int = 20) -> str:
+    """Draw a small circular gauge for a menu-item icon. Returns a PNG path.
+
+    Monochrome (dark arc on a light track) so it reads on the light Ubuntu
+    menu. `key` (cpu/gpu/ram) gives each gauge its own cached file.
+    """
+    pct = max(0.0, min(pct, 100.0))
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+    ctx = cairo.Context(surface)
+    ctx.set_source_rgba(0, 0, 0, 0)
+    ctx.paint()
+
+    cx = cy = size / 2.0
+    r = size / 2.0 - 2.5
+    lw = 3.0
+
+    # Track ring
+    ctx.set_line_width(lw)
+    ctx.set_source_rgba(0.80, 0.80, 0.80, 1.0)
+    ctx.arc(cx, cy, r, 0, 2 * math.pi)
+    ctx.stroke()
+
+    # Value arc (clockwise from top)
+    start = -math.pi / 2
+    end = start + 2 * math.pi * (pct / 100.0)
+    ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+    ctx.set_source_rgba(0.25, 0.25, 0.25, 1.0)
+    ctx.arc(cx, cy, r, start, end)
+    ctx.stroke()
+
+    path = os.path.join(_ICON_DIR, f"donut_{key}.png")
+    surface.write_to_png(path)
     return path
 
 
