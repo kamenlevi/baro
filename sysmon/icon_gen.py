@@ -47,9 +47,7 @@ def generate_tray_icon(
     ctx.set_source_rgba(0, 0, 0, 0)
     ctx.paint()
 
-    bars = [("cpu", cpu_pct), ("ram", ram_pct)]
-    if has_gpu:
-        bars.append(("gpu", gpu_pct))
+    bars = [("cpu", cpu_pct), ("gpu", gpu_pct if has_gpu else None), ("ram", ram_pct)]
 
     n = len(bars)
     pad = 1
@@ -59,16 +57,19 @@ def generate_tray_icon(
 
     for i, (_, pct) in enumerate(bars):
         x = pad + i * (bar_w + gap)
-        bar_h = max(1, int(pct / 100.0 * (size - pad * 2)))
         y_bg_top = pad
         bg_h = size - pad * 2
 
-        # Dark background track
+        # Dark background track (always drawn for constant width)
         ctx.set_source_rgba(0.15, 0.15, 0.15, 0.85)
         _rounded_rect(ctx, x, y_bg_top, bar_w, bg_h, 1)
         ctx.fill()
 
+        if pct is None:
+            continue
+
         # Filled portion (from bottom)
+        bar_h = max(1, int(pct / 100.0 * bg_h))
         r, g, b = _bar_color(pct)
         ctx.set_source_rgba(r, g, b, 0.95)
         y_fill = pad + bg_h - bar_h

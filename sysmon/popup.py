@@ -174,10 +174,12 @@ def _section_row(title: str) -> Gtk.Label:
 
 class PopupWindow(Gtk.Window):
 
-    def __init__(self, on_open_app, settings):
+    def __init__(self, on_open_app, settings, on_settings=None, on_quit=None):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
         self.on_open_app = on_open_app
         self.settings = settings
+        self._on_settings = on_settings
+        self._on_quit = on_quit
         self._fan_controller = None
         self._active_fan_key = None
         self._curve_editor = None
@@ -399,10 +401,22 @@ class PopupWindow(Gtk.Window):
         self._curve_toggle.connect("toggled", self._on_curve_toggle)
         bar.pack_start(self._curve_toggle, False, False, 0)
 
-        open_btn = Gtk.Button(label="Open Full Monitor")
+        if self._on_quit:
+            quit_btn = Gtk.Button(label="Quit")
+            quit_btn.get_style_context().add_class("btn-action")
+            quit_btn.connect("clicked", lambda *_: self._on_quit())
+            bar.pack_end(quit_btn, False, False, 0)
+
+        open_btn = Gtk.Button(label="Full Monitor")
         open_btn.get_style_context().add_class("btn-action")
         open_btn.connect("clicked", lambda *_: (self.on_open_app(), None)[1])
         bar.pack_end(open_btn, False, False, 0)
+
+        if self._on_settings:
+            settings_btn = Gtk.Button(label="Settings")
+            settings_btn.get_style_context().add_class("btn-action")
+            settings_btn.connect("clicked", lambda *_: self._on_settings())
+            bar.pack_end(settings_btn, False, False, 0)
 
         return bar
 

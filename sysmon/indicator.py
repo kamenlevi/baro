@@ -53,6 +53,8 @@ class SysMonIndicator:
         self._popup = PopupWindow(
             on_open_app=self._show_main_window,
             settings=settings,
+            on_settings=lambda: self._on_settings(),
+            on_quit=Gtk.main_quit,
         )
         self._popup._fan_controller = self._fan_controller
 
@@ -63,7 +65,9 @@ class SysMonIndicator:
                 AppIndicator.IndicatorCategory.HARDWARE,
             )
             self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-            self._indicator.set_menu(self._build_menu())
+            # A menu is required by AppIndicator3, but we make it just toggle
+            # the popup — the first (invisible) item fires on click.
+            self._indicator.set_menu(self._build_passthrough_menu())
         else:
             self._status_icon = Gtk.StatusIcon()
             self._status_icon.set_from_icon_name("utilities-system-monitor")
@@ -72,29 +76,12 @@ class SysMonIndicator:
         monitor.add_callback(self._on_stats)
         GLib.timeout_add(1500, self._update_icon)
 
-    def _build_menu(self) -> Gtk.Menu:
+    def _build_passthrough_menu(self) -> Gtk.Menu:
+        """Minimal menu that just toggles the popup on any interaction."""
         menu = Gtk.Menu()
-
-        item_popup = Gtk.MenuItem(label="Quick Stats…")
-        item_popup.connect("activate", lambda *_: self._toggle_popup())
-        menu.append(item_popup)
-
-        item_open = Gtk.MenuItem(label="Open Full Monitor")
-        item_open.connect("activate", lambda *_: self._show_main_window())
-        menu.append(item_open)
-
-        menu.append(Gtk.SeparatorMenuItem())
-
-        item_settings = Gtk.MenuItem(label="Settings…")
-        item_settings.connect("activate", self._on_settings)
-        menu.append(item_settings)
-
-        menu.append(Gtk.SeparatorMenuItem())
-
-        item_quit = Gtk.MenuItem(label="Quit SysMon")
-        item_quit.connect("activate", lambda *_: Gtk.main_quit())
-        menu.append(item_quit)
-
+        item = Gtk.MenuItem(label="Toggle Stats")
+        item.connect("activate", lambda *_: self._toggle_popup())
+        menu.append(item)
         menu.show_all()
         return menu
 
@@ -152,15 +139,17 @@ class SysMonIndicator:
             if self.settings.show_label:
                 parts = []
                 if self.settings.show_cpu:
-                    parts.append(f"CPU {s.cpu_percent:.0f}%")
+                    parts.append(f"CPU {s.cpu_percent:3.0f}%")
                 if self.settings.show_gpu and s.gpu_available:
-                    parts.append(f"GPU {s.gpu_percent:.0f}%")
+                    parts.append(f"GPU {s.gpu_percent:3.0f}%")
+                else:
+                    parts.append(f"GPU {'—':>3s} ")
                 if self.settings.show_ram:
-                    parts.append(f"RAM {s.ram_percent:.0f}%")
+                    parts.append(f"RAM {s.ram_percent:3.0f}%")
                 label = "  ".join(parts)
                 if has_warn:
                     label = "⚠ " + label
-                self._indicator.set_label(label, "CPU 100%  GPU 100%  RAM 100%")
+                self._indicator.set_label(label, label)
             else:
                 self._indicator.set_label("", "")
         else:
