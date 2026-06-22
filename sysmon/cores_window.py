@@ -15,29 +15,28 @@ from .monitor import SystemStats
 from .panel_base import CaretPanel
 
 _COLS = 2          # cores laid out in this many columns
-_HIST = 90         # samples kept per graph
+_WINDOWS = [("1 min", 60), ("5 min", 300), ("15 min", 900), ("All", None)]
 
 
 class _CoreGraph(Gtk.DrawingArea):
-    """A small scrolling area-graph of one value's history (0-100%)."""
+    """An area-graph of one value's history (a list of (ts, pct)) over a
+    selectable time window, with gaps left blank where the machine was off."""
 
     def __init__(self, width=150, height=40):
         super().__init__()
-        self._vals = []
+        self._series = []     # (ts, val)
+        self._window = 300
         self.set_size_request(width, height)
         self.connect("draw", self._draw)
 
-    def push(self, v):
-        self._vals.append(max(0.0, min(float(v), 100.0)))
-        if len(self._vals) > _HIST:
-            del self._vals[0]
+    def set_series(self, series, window):
+        self._series = series
+        self._window = window
         self.queue_draw()
 
     def _draw(self, _w, cr):
         a = self.get_allocation()
         w, h = a.width, a.height
-
-        # Background + border
         cr.set_source_rgba(0.97, 0.97, 0.97, 1.0)
         cr.rectangle(0, 0, w, h)
         cr.fill()
@@ -46,35 +45,40 @@ class _CoreGraph(Gtk.DrawingArea):
         cr.rectangle(0.5, 0.5, w - 1, h - 1)
         cr.stroke()
 
-        n = len(self._vals)
-        if n < 2:
+        s = self._series
+        if len(s) < 2:
             return
+        t1 = s[-1][0]
+        t0 = (t1 - self._window) if self._window else s[0][0]
+        span = max(1e-6, t1 - t0)
+        pts = [(t, v) for (t, v) in s if t >= t0]
+        if len(pts) < 2:
+            return
+        dts = sorted(pts[i][0] - pts[i - 1][0] for i in range(1, len(pts)))
+        median = dts[len(dts) // 2] or 1.0
+        gap = max(15.0, 6.0 * median)
 
-        def pt(i, v):
-            return (i / (n - 1) * w, (h - 1) - (v / 100.0) * (h - 2))
+        def x_of(t):
+            return (t - t0) / span * w
 
-        # Filled area
-        cr.move_to(0, h)
-        for i, v in enumerate(self._vals):
-            cr.line_to(*pt(i, v))
-        cr.line_to(w, h)
-        cr.close_path()
-        cr.set_source_rgba(0.30, 0.45, 0.72, 0.20)
-        cr.fill()
+        def y_of(v):
+            return (h - 1) - (max(0.0, min(v, 100.0)) / 100.0) * (h - 2)
 
-        # Line on top
-        cr.move_to(*pt(0, self._vals[0]))
-        for i, v in enumerate(self._vals):
-            cr.line_to(*pt(i, v))
+        # Line with gap breaks
         cr.set_source_rgba(0.24, 0.36, 0.60, 0.95)
         cr.set_line_width(1.3)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        prev_t = None
+        for t, v in pts:
+            if prev_t is None or t - prev_t > gap:
+                cr.move_to(x_of(t), y_of(v))
+            else:
+                cr.line_to(x_of(t), y_of(v))
+            prev_t = t
         cr.stroke()
 
 
 class _GraphCell(Gtk.Box):
-    """A label ('Core 0   45%') above a scrolling graph."""
-
     def __init__(self, title):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self._title = title
@@ -85,8 +89,8 @@ class _GraphCell(Gtk.Box):
         self.pack_start(self.label, False, False, 0)
         self.pack_start(self.graph, True, True, 0)
 
-    def update(self, pct, suffix=""):
-        self.graph.push(pct)
+    def update(self, series, window, pct, suffix=""):
+        self.graph.set_series(series, window)
         text = f"{self._title}   {pct:.0f}%"
         if suffix:
             text += f"   {suffix}"
@@ -97,7 +101,21 @@ class CoresPanel(CaretPanel):
     def __init__(self):
         super().__init__("CPU / GPU cores", show_back=True)
         self.autohide = False
+        self._hist = []
         root = self.body
+
+        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        ctrl.pack_start(Gtk.Label(label="History:"), False, False, 0)
+        self._combo = Gtk.ComboBoxText()
+        for label, secs in _WINDOWS:
+            self._combo.append("none" if secs is None else str(secs), label)
+        self._combo.set_active(1)   # 5 min
+        self._combo.connect("changed", lambda *_: self._redraw())
+        ctrl.pack_start(self._combo, False, False, 0)
+        self._span_lbl = Gtk.Label(xalign=1.0)
+        self._span_lbl.set_markup("<small>—</small>")
+        ctrl.pack_end(self._span_lbl, True, True, 0)
+        root.pack_start(ctrl, False, False, 2)
 
         self._cpu_header = Gtk.Label(xalign=0)
         self._cpu_header.set_markup("<b>CPU cores</b>")
@@ -138,12 +156,29 @@ class CoresPanel(CaretPanel):
             self._core_cells.append(cell)
         self._cpu_grid.show_all()
 
-    def update(self, s: SystemStats):
+    def _window(self):
+        wid = self._combo.get_active_id()
+        return None if wid == "none" else int(wid)
+
+    def update(self, s: SystemStats, hist=None):
+        self._hist = hist or []
+        self._last_s = s
+        self._redraw()
+
+    def _redraw(self):
+        s = getattr(self, "_last_s", None)
+        hist = self._hist
+        if s is None:
+            return
         cores = s.cpu_per_core or []
         self._ensure_cores(len(cores))
         self._cpu_header.set_markup(f"<b>CPU — {len(cores)} cores</b>")
-        for cell, v in zip(self._core_cells, cores):
-            cell.update(v)
+        window = self._window()
+
+        for i, cell in enumerate(self._core_cells):
+            series = [(t, c[i]) for (t, c, _g) in hist if i < len(c)]
+            cur = cores[i] if i < len(cores) else 0.0
+            cell.update(series, window, cur)
 
         if s.gpu_available:
             self._gpu_box.set_visible(True)
@@ -153,7 +188,26 @@ class CoresPanel(CaretPanel):
                           f"{s.gpu_mem_total_mb/1024:.1f}G")
             if s.gpu_temp > 0:
                 suffix += (f"  {s.gpu_temp:.0f}°C" if suffix else f"{s.gpu_temp:.0f}°C")
-            self._gpu_cell.update(s.gpu_percent, suffix)
+            gseries = [(t, g) for (t, _c, g) in hist if g is not None]
+            self._gpu_cell.update(gseries, window, s.gpu_percent, suffix)
         else:
             self._gpu_box.set_visible(False)
+
+        # Time-span label so it's clear how much is shown.
+        if len(hist) >= 2:
+            actual = hist[-1][0] - hist[0][0]
+            shown = actual if window is None else min(window, actual)
+            self._span_lbl.set_markup(
+                f"<small>showing last {_fmt_span(shown)}</small>")
+        else:
+            self._span_lbl.set_markup("<small>collecting…</small>")
+
+
+def _fmt_span(sec):
+    sec = int(sec)
+    if sec >= 3600:
+        return f"{sec/3600:.1f} h"
+    if sec >= 60:
+        return f"{sec//60} min"
+    return f"{sec} s"
 

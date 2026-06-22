@@ -27,6 +27,8 @@ DEFAULTS = {
     "default_view": "menu",
     # Default time window (seconds) for the usage-history view.
     "history_default_window": 1800,
+    # Mountpoint shown on the main Disk gauge.
+    "main_disk": "/",
     # Quick-stats popup geometry (persisted across sessions)
     "popup_x": -1,
     "popup_y": -1,
@@ -107,12 +109,12 @@ def open_settings_dialog(settings: Settings, parent=None):
         box.pack_start(row, False, False, 0)
         return sp
 
-    section("Display")
-    t_cpu = toggle("Show CPU", "show_cpu")
-    t_gpu = toggle("Show GPU", "show_gpu")
-    t_ram = toggle("Show RAM", "show_ram")
-    t_temp = toggle("Show temperatures", "show_temp")
-    t_label = toggle("Show text label in tray", "show_label")
+    # Most-used settings first.
+    section("Behaviour")
+    t_notify = toggle("Desktop notifications for warnings", "notify_desktop")
+    sp_poll = spin("Poll interval (seconds)", "poll_interval", 0.5, 10.0, 0.5, 1)
+    sp_hist = spin("History retention (hours)", "history_hours", 1, 168)
+    sp_graph = spin("Graph window (seconds)", "graph_window_sec", 30, 3600, 30)
 
     section("Warning Thresholds")
     sp_cpu_temp = spin("CPU temp warning (°C)", "warn_cpu_temp", 60, 110)
@@ -120,11 +122,12 @@ def open_settings_dialog(settings: Settings, parent=None):
     sp_ram = spin("RAM warning (%)", "warn_ram_pct", 50, 100)
     sp_cpu_pct = spin("CPU load warning (%)", "warn_cpu_pct", 50, 100)
 
-    section("Behaviour")
-    t_notify = toggle("Desktop notifications for warnings", "notify_desktop")
-    sp_poll = spin("Poll interval (seconds)", "poll_interval", 0.5, 10.0, 0.5, 1)
-    sp_hist = spin("History retention (hours)", "history_hours", 1, 168)
-    sp_graph = spin("Graph window (seconds)", "graph_window_sec", 30, 3600, 30)
+    section("Display")
+    t_cpu = toggle("Show CPU", "show_cpu")
+    t_gpu = toggle("Show GPU", "show_gpu")
+    t_ram = toggle("Show RAM", "show_ram")
+    t_temp = toggle("Show temperatures", "show_temp")
+    t_label = toggle("Show text label in tray", "show_label")
 
     box.show_all()
 

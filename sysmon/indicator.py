@@ -45,9 +45,13 @@ class SysMonIndicator:
         self.settings = settings
         self._main_window = None
         self._last_stats = SystemStats()
-        self._net_prev = psutil.net_io_counters()
+        self._net_prev = _net_totals()
         self._net_t = time.monotonic()
         self._net_rate = (0.0, 0.0)
+        # Rolling per-core (+ gpu) history so the Cores panel has the past,
+        # not just realtime. ~2000 samples ≈ 50 min at the default poll.
+        self._core_hist = []
+        self._CORE_HIST_MAX = 2000
 
         # Fan controller
         from .fans import detect_fans, FanCurveController
@@ -68,8 +72,8 @@ class SysMonIndicator:
             settings=settings,
             on_settings=lambda: self._on_settings(),
             on_quit=Gtk.main_quit,
-            on_cores=lambda: self._open_view("cores", fresh=False),
-            on_nav=lambda v: self._open_view(v, fresh=False),
+            on_cores=lambda: self._open_view("cores", via="panel"),
+            on_nav=lambda v: self._open_view(v, via="panel"),
         )
         self._popup._fan_controller = self._fan_controller
 
@@ -127,13 +131,13 @@ class SysMonIndicator:
 
         menu.append(Gtk.SeparatorMenuItem())
 
+        # (Disks omitted — the Disk row's submenu already lists every disk.)
         for label, view in (("Detailed panel…", "panel"),
                             ("Processes…", "processes"),
-                            ("Disks…", "disks"),
                             ("Usage history…", "history"),
                             ("CPU / GPU cores…", "cores")):
             it = Gtk.MenuItem(label=label)
-            it.connect("activate", lambda _w, v=view: self._open_view(v))
+            it.connect("activate", lambda _w, v=view: self._open_view(v, via="menu"))
             menu.append(it)
 
         menu.append(Gtk.SeparatorMenuItem())
@@ -191,10 +195,13 @@ class SysMonIndicator:
         return lines
 
     def _set_gauge(self, item, key, pct, label):
-        item.set_label(label)
+        _mono(item, label)
         img = item.get_image()
         if img is not None:
             img.set_from_file(gen_donut_icon(pct, key, size=_GAUGE_PX))
+
+    def _main_disk(self):
+        return getattr(self.settings, "main_disk", "/") or "/"
 
     def _refresh_menu(self, s: SystemStats, procs):
         if not _HAS_INDICATOR:
@@ -238,7 +245,7 @@ class SysMonIndicator:
         self._fill_items(self._ram_items, ram_lines)
 
         try:
-            disk_pct = psutil.disk_usage("/").percent
+            disk_pct = psutil.disk_usage(self._main_disk()).percent
         except Exception:
             disk_pct = 0.0
         self._set_gauge(self._mi_disk, "disk", disk_pct,
@@ -246,17 +253,20 @@ class SysMonIndicator:
         self._fill_items(self._disk_items, self._disk_lines())
 
         down, up = self._net_rate
-        self._mi_net.set_label(f"Network   ↓ {_rate(down)}   ↑ {_rate(up)}")
+        _mono(self._mi_net, f"Network   ↓ {_rate(down)}   ↑ {_rate(up)}")
 
     # ── View opening ─────────────────────────────────────────────────────────
 
     def _panels(self):
         return (self._popup, self._cores, self._history, self._proc, self._disks)
 
-    def _open_view(self, view, fresh=True):
+    def _open_view(self, view, via="menu", fresh=None):
         from .panel_base import CaretPanel
-        # Fresh opens (from the menu) appear under the cursor; navigation
-        # (panel rows / back arrow) reuses that spot so panels stay put.
+        # Opens from the menu appear under the cursor; navigation reuses that
+        # spot. A drill-in opened from the menu has NO back target (back just
+        # closes); one opened from the panel goes back to the panel.
+        if fresh is None:
+            fresh = (via == "menu")
         if fresh or self._panel_geom is None:
             self._panel_geom = CaretPanel.cursor_geometry()
 
@@ -266,20 +276,28 @@ class SysMonIndicator:
         if target is None:
             return
 
-        if target is self._popup:
-            target.update(self._last_stats, self._collect_procs(6))
-        elif target is self._cores:
-            target.update(self._last_stats)
-        else:
-            target.refresh()
+        if hasattr(target, "on_back"):
+            target.on_back = (lambda: self._open_view("panel", via="panel")) \
+                if via == "panel" else None
 
+        # Show immediately for snappiness, then fill content on idle.
         for p in self._panels():
             if p is not target:
                 p.hide()
         target.show_at(*self._panel_geom)
+        GLib.idle_add(self._refresh_target, target)
 
-    def _open_panel(self, fresh=True):
-        self._open_view("panel", fresh=fresh)
+    def _refresh_target(self, target):
+        if target is self._popup:
+            target.update(self._last_stats, self._collect_procs(6))
+        elif target is self._cores:
+            target.update(self._last_stats, self._core_hist)
+        else:
+            target.refresh()
+        return False
+
+    def _open_panel(self, via="menu"):
+        self._open_view("panel", via=via)
 
     def _collect_procs(self, n):
         try:
@@ -299,19 +317,14 @@ class SysMonIndicator:
                 for label, rpm, _ in s.fans
             ]
 
-        # Network rate
+        # Network rate (real interfaces only — loopback excluded)
         now = time.monotonic()
         dt = max(0.001, now - self._net_t)
-        try:
-            nio = psutil.net_io_counters()
-            self._net_rate = (
-                (nio.bytes_recv - self._net_prev.bytes_recv) / dt,
-                (nio.bytes_sent - self._net_prev.bytes_sent) / dt,
-            )
-            self._net_prev = nio
-            self._net_t = now
-        except Exception:
-            pass
+        recv, sent = _net_totals()
+        self._net_rate = ((recv - self._net_prev[0]) / dt,
+                          (sent - self._net_prev[1]) / dt)
+        self._net_prev = (recv, sent)
+        self._net_t = now
 
         # Persist to history so the history view has data.
         try:
@@ -319,12 +332,19 @@ class SysMonIndicator:
         except Exception:
             pass
 
+        # Per-core history buffer (always recorded so it's there on open).
+        self._core_hist.append((
+            time.time(), list(s.cpu_per_core or []),
+            s.gpu_percent if s.gpu_available else None))
+        if len(self._core_hist) > self._CORE_HIST_MAX:
+            del self._core_hist[: -self._CORE_HIST_MAX]
+
         procs = self._collect_procs(8)
         GLib.idle_add(self._refresh_menu, s, procs)
         if self._popup.get_visible():
             GLib.idle_add(self._popup.update, s, procs)
         if self._cores.get_visible():
-            GLib.idle_add(self._cores.update, s)
+            GLib.idle_add(self._cores.update, s, self._core_hist)
         if self._proc.get_visible():
             GLib.idle_add(self._proc.refresh)
         if self._disks.get_visible():
@@ -398,6 +418,31 @@ class SysMonIndicator:
 
 
 _FIG = "\u2007"   # figure space - same width as a digit
+
+
+def _net_totals():
+    """Total (recv, sent) bytes across real interfaces, excluding loopback."""
+    try:
+        per = psutil.net_io_counters(pernic=True)
+        recv = sum(c.bytes_recv for n, c in per.items() if not n.startswith("lo"))
+        sent = sum(c.bytes_sent for n, c in per.items() if not n.startswith("lo"))
+        return recv, sent
+    except Exception:
+        try:
+            c = psutil.net_io_counters()
+            return c.bytes_recv, c.bytes_sent
+        except Exception:
+            return 0, 0
+
+
+def _mono(item, text):
+    """Render a menu item's label in monospace so its width never changes."""
+    lbl = item.get_child()
+    if isinstance(lbl, Gtk.Label):
+        lbl.set_use_markup(True)
+        lbl.set_markup("<tt>" + GLib.markup_escape_text(text) + "</tt>")
+    else:
+        item.set_label(text)
 
 
 def _pct3(v) -> str:

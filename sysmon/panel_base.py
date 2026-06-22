@@ -28,6 +28,9 @@ window.sysmon-panel { background-color: transparent; }
 .close-btn:hover { color: #b04a3a; }
 .back-btn { color: #2a2a2a; font-size: 18px; min-width: 30px; min-height: 26px; padding: 0 8px; }
 .back-btn:hover { color: #000000; background-color: #ececec; border-radius: 6px; }
+/* Keep controls looking active even when the panel isn't the focused window */
+.back-btn:backdrop { color: #2a2a2a; }
+.close-btn:backdrop { color: #888888; }
 """
 
 _CSS_APPLIED = [False]
@@ -173,7 +176,7 @@ class CaretPanel(Gtk.Window):
         self.present()
         self.grab_focus()
         self.queue_draw()
-        GLib.timeout_add(300, self._settle)
+        GLib.timeout_add(50, self._settle)
 
     @staticmethod
     def cursor_geometry():

@@ -10,7 +10,7 @@ import time
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, Pango
+from gi.repository import Gtk, Gdk, GLib, Pango
 
 import cairo
 import psutil
@@ -35,6 +35,11 @@ CSS = b"""
     border-radius: 6px; padding: 2px 12px; font-size: 10px;
 }
 .foot-btn:hover { background-color: #e7e7e7; }
+.foot-btn:backdrop { color: #333333; background-color: #f2f2f2; }
+.set-main-btn { background: transparent; border: none; color: #9a9a9a;
+                padding: 0 4px; min-width: 0; min-height: 0; font-size: 11px; }
+.set-main-btn:hover { color: #c79a2a; }
+.is-main { color: #c79a2a; }
 progressbar trough { min-height: 6px; }
 progressbar progress { min-height: 6px; }
 """
@@ -162,7 +167,7 @@ class _MetricRow(Gtk.Box):
 
         self.revealer = Gtk.Revealer()
         self.revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
-        self.revealer.set_transition_duration(140)
+        self.revealer.set_transition_duration(90)
         self.detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         self.detail_box.set_margin_start(4)
         self.detail_box.set_margin_top(4)
@@ -226,7 +231,13 @@ class PopupWindow(CaretPanel):
         self._fan_controller = None
         self._last = None
         self._prev_disk = psutil.disk_io_counters()
-        self._prev_net = psutil.net_io_counters()
+        try:
+            _per = psutil.net_io_counters(pernic=True)
+            self._prev_net = (
+                sum(c.bytes_recv for n, c in _per.items() if not n.startswith("lo")),
+                sum(c.bytes_sent for n, c in _per.items() if not n.startswith("lo")))
+        except Exception:
+            self._prev_net = (0, 0)
         self._prev_t = time.monotonic()
 
         root = self.body
@@ -247,10 +258,11 @@ class PopupWindow(CaretPanel):
         self._build_gpu_detail()
         self._build_ram_detail()
         self._build_disk_detail()
-        self._cpu.on_expand = lambda: self._last and self._update_cpu_detail(self._last)
-        self._gpu.on_expand = lambda: self._last and self._update_gpu_detail(self._last)
-        self._ram.on_expand = lambda: self._last and self._update_ram_detail(self._last)
-        self._disk.on_expand = self._update_disk_detail
+        # Fill detail on idle so a click toggles instantly (snappy).
+        self._cpu.on_expand = lambda: GLib.idle_add(self._deferred, self._update_cpu_detail)
+        self._gpu.on_expand = lambda: GLib.idle_add(self._deferred, self._update_gpu_detail)
+        self._ram.on_expand = lambda: GLib.idle_add(self._deferred, self._update_ram_detail)
+        self._disk.on_expand = lambda: GLib.idle_add(self._update_disk_detail) and False
 
         root.pack_start(Gtk.Separator(), False, False, 4)
         self._net = _InfoRow("Network")
@@ -296,7 +308,7 @@ class PopupWindow(CaretPanel):
         nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         nav.set_homogeneous(True)
         for label, view in (("History", "history"), ("Cores", "cores"),
-                            ("Disks", "disks"), ("Processes", "processes")):
+                            ("Processes", "processes")):
             b = Gtk.Button(label=label)
             b.get_style_context().add_class("foot-btn")
             b.connect("clicked", lambda _w, v=view: self._nav(v))
@@ -317,6 +329,11 @@ class PopupWindow(CaretPanel):
 
         self.show_all()
         self.hide()
+
+    def _deferred(self, fn):
+        if self._last is not None:
+            fn(self._last)
+        return False
 
     # ── nav / buttons ───────────────────────────────────────────────────
     def _nav(self, view):
@@ -371,6 +388,24 @@ class PopupWindow(CaretPanel):
 
     def _build_disk_detail(self):
         self._disk_detail_box = self._disk.detail_box
+
+    def _main_disk(self):
+        return getattr(self.settings, "main_disk", "/") or "/"
+
+    def _set_main_disk(self, mountpoint):
+        self.settings.main_disk = mountpoint
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+        self._update_disk_detail()
+        if self._last is not None:
+            try:
+                import psutil as _ps
+                self._disk.set(_ps.disk_usage(mountpoint).percent,
+                               self._disk.sub1.get_text(), self._disk.sub2.get_text())
+            except Exception:
+                pass
 
     def _update_cpu_detail(self, s):
         if s.cpu_freq_mhz > 0:
@@ -434,7 +469,16 @@ class PopupWindow(CaretPanel):
             except Exception:
                 continue
             seen.add(part.mountpoint)
-            head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            is_main = (part.mountpoint == self._main_disk())
+            head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            star = Gtk.Button(label="★" if is_main else "☆")
+            star.get_style_context().add_class("set-main-btn")
+            if is_main:
+                star.get_style_context().add_class("is-main")
+            star.set_relief(Gtk.ReliefStyle.NONE)
+            star.set_tooltip_text("Show this disk on the main gauge")
+            star.connect("clicked", lambda _w, mp=part.mountpoint: self._set_main_disk(mp))
+            head.pack_start(star, False, False, 0)
             head.pack_start(_lbl(part.mountpoint, "info-name", xalign=0.0, ellipsize=True),
                             True, True, 0)
             head.pack_end(_lbl(f"{u.percent:.0f}%  {u.used/(1024**3):.0f}/"
@@ -452,7 +496,7 @@ class PopupWindow(CaretPanel):
         dt = max(0.001, now - self._prev_t)
         out = {}
         try:
-            du = psutil.disk_usage("/")
+            du = psutil.disk_usage(self._main_disk())
             out.update(disk_pct=du.percent, disk_used=du.used, disk_total=du.total)
         except Exception:
             pass
@@ -464,10 +508,12 @@ class PopupWindow(CaretPanel):
         except Exception:
             pass
         try:
-            nio = psutil.net_io_counters()
-            out["down"] = (nio.bytes_recv - self._prev_net.bytes_recv) / dt
-            out["up"] = (nio.bytes_sent - self._prev_net.bytes_sent) / dt
-            self._prev_net = nio
+            per = psutil.net_io_counters(pernic=True)
+            recv = sum(c.bytes_recv for n, c in per.items() if not n.startswith("lo"))
+            sent = sum(c.bytes_sent for n, c in per.items() if not n.startswith("lo"))
+            out["down"] = (recv - self._prev_net[0]) / dt
+            out["up"] = (sent - self._prev_net[1]) / dt
+            self._prev_net = (recv, sent)
         except Exception:
             pass
         self._prev_t = now

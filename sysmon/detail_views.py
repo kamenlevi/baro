@@ -28,10 +28,25 @@ class _MultiGraph(Gtk.DrawingArea):
         self._rows = []
         self._has_gpu = False
         self.on_zoom = None
+        self._mx = None
         self.set_size_request(-1, 220)
         self.connect("draw", self._draw)
-        self.add_events(Gdk.EventMask.SCROLL_MASK)
+        self.add_events(Gdk.EventMask.SCROLL_MASK
+                        | Gdk.EventMask.POINTER_MOTION_MASK
+                        | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         self.connect("scroll-event", self._on_scroll)
+        self.connect("motion-notify-event", self._on_motion)
+        self.connect("leave-notify-event", self._on_leave)
+
+    def _on_motion(self, _w, event):
+        self._mx = event.x
+        self.queue_draw()
+        return False
+
+    def _on_leave(self, *_):
+        self._mx = None
+        self.queue_draw()
+        return False
 
     def _on_scroll(self, _w, event):
         if self.on_zoom is None:
@@ -109,6 +124,48 @@ class _MultiGraph(Gtk.DrawingArea):
             series(2, _SERIES[1][1])
             if self._has_gpu:
                 series(3, _SERIES[2][1])
+
+            # Hover crosshair + readout
+            if self._mx is not None and gx <= self._mx <= gx + gw:
+                tt = t0 + (self._mx - gx) / gw * span
+                row = min(rows, key=lambda r: abs(r[0] - tt))
+                hx = gx + (row[0] - t0) / span * gw
+                cr.set_source_rgba(0.4, 0.4, 0.4, 0.7)
+                cr.set_line_width(1.0)
+                cr.move_to(hx, gy)
+                cr.line_to(hx, gy + gh)
+                cr.stroke()
+                # focus dots
+                vals = [("CPU", row[1]), ("RAM", row[2])]
+                if self._has_gpu:
+                    vals.append(("GPU", row[3]))
+                for (name, v), (_n, colour) in zip(vals, _SERIES):
+                    yy = gy + gh * (1.0 - max(0.0, min(v, 100.0)) / 100.0)
+                    cr.set_source_rgba(*colour, 1.0)
+                    cr.arc(hx, yy, 2.5, 0, 6.2832)
+                    cr.fill()
+                # readout box
+                import time as _t
+                when = _t.strftime("%H:%M:%S", _t.localtime(row[0]))
+                lines = [when] + [f"{n}: {v:.0f}%" for n, v in vals]
+                cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL,
+                                    cairo.FONT_WEIGHT_NORMAL)
+                cr.set_font_size(10)
+                bw = max(cr.text_extents(t).width for t in lines) + 10
+                bh = 13 * len(lines) + 6
+                bx = min(hx + 8, gx + gw - bw)
+                by = gy + 4
+                cr.set_source_rgba(1, 1, 1, 0.92)
+                cr.rectangle(bx, by, bw, bh)
+                cr.fill()
+                cr.set_source_rgba(0.8, 0.8, 0.8, 1)
+                cr.set_line_width(1)
+                cr.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1)
+                cr.stroke()
+                cr.set_source_rgba(0.15, 0.15, 0.15, 1)
+                for i, t in enumerate(lines):
+                    cr.move_to(bx + 5, by + 12 + i * 13)
+                    cr.show_text(t)
         else:
             cr.set_source_rgba(0.6, 0.6, 0.6, 1.0)
             cr.set_font_size(12)
