@@ -17,33 +17,58 @@ import psutil
 from .processes import collect_top_processes, terminate_group
 
 
-_WINDOWS = [("5m", 300), ("30m", 1800), ("1h", 3600),
-            ("6h", 21600), ("24h", 86400)]
+_WINDOWS = [("5 min", 300), ("30 min", 1800), ("1 hour", 3600),
+            ("6 hours", 21600), ("24 hours", 86400)]
 
 
-def _segmented(box, options, active_value, on_select):
-    """A row of grouped toggle buttons (no popup → safe on the panel).
+class _Dropdown(Gtk.MenuButton):
+    """A dropdown selector (click → vertical list in a Popover → choose).
 
-    options: list of (label, value). Returns the list of buttons; each has a
-    `_value` attr. on_select(value) is called when the selection changes.
+    A Popover renders inside the parent window's surface, so — unlike a
+    ComboBox's separate popup window — it's safe on the transparent panel.
+    options: list of (label, value). on_select(value) fires on change.
     """
-    btns = []
-    group = None
-    for label, value in options:
-        rb = Gtk.RadioButton.new_with_label_from_widget(group, label)
-        if group is None:
-            group = rb
-        rb.set_mode(False)            # render as a button, not a radio dot
-        rb.get_style_context().add_class("seg-btn")
-        rb._value = value
-        rb.connect("toggled", lambda b: b.get_active() and on_select(b._value))
-        box.pack_start(rb, False, False, 0)
-        btns.append(rb)
-    for rb in btns:
-        if rb._value == active_value:
-            rb.set_active(True)
-            break
-    return btns
+
+    def __init__(self, options, active_value, on_select):
+        super().__init__()
+        self._options = options
+        self._on_select = on_select
+        self._idx = 0
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+        for i, (label, _v) in enumerate(options):
+            b = Gtk.Button(label=label)
+            b.set_relief(Gtk.ReliefStyle.NONE)
+            b.get_child().set_xalign(0.0)
+            b.connect("clicked", lambda _w, i=i: self._choose(i))
+            box.pack_start(b, False, False, 0)
+        box.show_all()
+        pop.add(box)
+        self.set_popover(pop)
+        for i, (_l, v) in enumerate(options):
+            if v == active_value:
+                self._idx = i
+                break
+        self.set_label(options[self._idx][0])
+
+    def _choose(self, i):
+        self._idx = i
+        self.set_label(self._options[i][0])
+        self.get_popover().popdown()
+        self._on_select(self._options[i][1])
+
+    def value(self):
+        return self._options[self._idx][1]
+
+    def index(self):
+        return self._idx
+
+    def set_index(self, i):
+        i = max(0, min(len(self._options) - 1, i))
+        if i != self._idx:
+            self._choose(i)
 _SERIES = [("CPU", (0.23, 0.43, 0.65)),
            ("RAM", (0.62, 0.40, 0.66)),
            ("GPU", (0.30, 0.60, 0.38))]
@@ -198,10 +223,11 @@ class HistoryView(Gtk.Box):
         self.history = history_db
         self.settings = settings
 
-        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ctrl.pack_start(Gtk.Label(label="Window:"), False, False, 0)
         default = getattr(settings, "history_default_window", 1800)
-        self._win_btns = _segmented(
-            ctrl, [(l, s) for (l, s) in _WINDOWS], default, self._on_win)
+        self._win = _Dropdown(list(_WINDOWS), default, self._on_win)
+        ctrl.pack_start(self._win, False, False, 0)
         setd = Gtk.Button(label="Set default")
         setd.connect("clicked", self._set_default)
         ctrl.pack_end(setd, False, False, 0)
@@ -241,18 +267,11 @@ class HistoryView(Gtk.Box):
     def _on_win(self, _secs):
         self.refresh()
 
-    def _active_idx(self):
-        for i, b in enumerate(self._win_btns):
-            if b.get_active():
-                return i
-        return 0
-
     def _win_secs(self):
-        return self._win_btns[self._active_idx()]._value
+        return self._win.value()
 
     def _zoom(self, direction):
-        i = max(0, min(len(self._win_btns) - 1, self._active_idx() + direction))
-        self._win_btns[i].set_active(True)
+        self._win.set_index(self._win.index() + direction)
 
     def _set_default(self, *_):
         self.settings.history_default_window = int(self._win_secs())
@@ -285,9 +304,10 @@ class ProcessesView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._sort = "cpu"
 
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        bar.pack_start(Gtk.Label(label="Sort: "), False, False, 0)
-        _segmented(bar, [("CPU", "cpu"), ("Memory", "ram")], "cpu", self._on_sort)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.pack_start(Gtk.Label(label="Sort by:"), False, False, 0)
+        bar.pack_start(_Dropdown([("CPU", "cpu"), ("Memory", "ram")], "cpu",
+                                 self._on_sort), False, False, 0)
         self.pack_start(bar, False, False, 4)
 
         scroll = Gtk.ScrolledWindow()

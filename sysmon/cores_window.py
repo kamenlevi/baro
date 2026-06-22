@@ -13,7 +13,7 @@ import cairo
 from .monitor import SystemStats
 
 _COLS = 2
-_WINDOWS = [("1m", 60), ("5m", 300), ("15m", 900), ("All", None)]
+_WINDOWS = [("1 min", 60), ("5 min", 300), ("15 min", 900), ("All", None)]
 
 
 def _fmt_span(sec):
@@ -26,11 +26,12 @@ def _fmt_span(sec):
 
 
 class _CoreGraph(Gtk.DrawingArea):
-    def __init__(self, width=150, height=40):
+    def __init__(self, width=110, height=40):
         super().__init__()
         self._series = []
         self._window = 300
         self.set_size_request(width, height)
+        self.set_hexpand(True)
         self.connect("draw", self._draw)
 
     def set_series(self, series, window):
@@ -107,10 +108,11 @@ class CoresView(Gtk.Box):
         self._hist = []
         self._last_s = None
 
-        from .detail_views import _segmented
-        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        ctrl.pack_start(Gtk.Label(label="History: "), False, False, 0)
-        self._win_btns = _segmented(ctrl, _WINDOWS, 300, lambda _v: self._redraw())
+        from .detail_views import _Dropdown
+        ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ctrl.pack_start(Gtk.Label(label="History:"), False, False, 0)
+        self._win = _Dropdown(list(_WINDOWS), 300, lambda _v: self._redraw())
+        ctrl.pack_start(self._win, False, False, 0)
         self._span_lbl = Gtk.Label(xalign=1.0)
         self._span_lbl.set_markup("<small>—</small>")
         ctrl.pack_end(self._span_lbl, True, True, 0)
@@ -154,10 +156,7 @@ class CoresView(Gtk.Box):
         self._cpu_grid.show_all()
 
     def _window(self):
-        for b in self._win_btns:
-            if b.get_active():
-                return b._value
-        return 300
+        return self._win.value()
 
     def update(self, s: SystemStats, hist=None):
         self._hist = hist or []
