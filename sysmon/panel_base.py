@@ -14,7 +14,7 @@ from gi.repository import Gtk, Gdk, GLib
 
 import cairo
 
-WIDTH = 340
+WIDTH = 330
 CARET_H = 9
 CARET_W = 18
 
@@ -31,6 +31,8 @@ window.sysmon-panel { background-color: transparent; }
 /* Keep controls looking active even when the panel isn't the focused window */
 .back-btn:backdrop { color: #2a2a2a; }
 .close-btn:backdrop { color: #888888; }
+/* Compact segmented selector buttons so a row of them fits the panel width */
+.seg-btn { padding: 1px 5px; font-size: 10px; min-height: 0; min-width: 0; }
 """
 
 _CSS_APPLIED = [False]

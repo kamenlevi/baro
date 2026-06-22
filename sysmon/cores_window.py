@@ -13,7 +13,7 @@ import cairo
 from .monitor import SystemStats
 
 _COLS = 2
-_WINDOWS = [("1 min", 60), ("5 min", 300), ("15 min", 900), ("All", None)]
+_WINDOWS = [("1m", 60), ("5m", 300), ("15m", 900), ("All", None)]
 
 
 def _fmt_span(sec):

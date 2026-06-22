@@ -17,8 +17,8 @@ import psutil
 from .processes import collect_top_processes, terminate_group
 
 
-_WINDOWS = [("5 min", 300), ("30 min", 1800), ("1 hour", 3600),
-            ("6 hours", 21600), ("24 hours", 86400)]
+_WINDOWS = [("5m", 300), ("30m", 1800), ("1h", 3600),
+            ("6h", 21600), ("24h", 86400)]
 
 
 def _segmented(box, options, active_value, on_select):
@@ -34,6 +34,7 @@ def _segmented(box, options, active_value, on_select):
         if group is None:
             group = rb
         rb.set_mode(False)            # render as a button, not a radio dot
+        rb.get_style_context().add_class("seg-btn")
         rb._value = value
         rb.connect("toggled", lambda b: b.get_active() and on_select(b._value))
         box.pack_start(rb, False, False, 0)
