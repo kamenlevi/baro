@@ -168,14 +168,19 @@ class _Donut(Gtk.DrawingArea):
 
 
 class _MetricRow(Gtk.Box):
-    """A donut gauge on the left and up to two detail lines on the right."""
+    """Expandable metric: a clickable header (donut + name + detail lines +
+    chevron) that reveals a per-component detail area below it, in place."""
 
     def __init__(self, name: str):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.set_margin_top(5)
-        self.set_margin_bottom(5)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.set_margin_top(3)
+        self.set_margin_bottom(3)
+
+        header = Gtk.EventBox()
+        hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header.add(hb)
         self.donut = _Donut()
-        self.pack_start(self.donut, False, False, 0)
+        hb.pack_start(self.donut, False, False, 0)
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         details.set_valign(Gtk.Align.CENTER)
         self.name_lbl = _lbl(name, "metric-name", xalign=0.0)
@@ -184,7 +189,43 @@ class _MetricRow(Gtk.Box):
         details.pack_start(self.name_lbl, False, False, 0)
         details.pack_start(self.sub1, False, False, 0)
         details.pack_start(self.sub2, False, False, 0)
-        self.pack_start(details, True, True, 0)
+        hb.pack_start(details, True, True, 0)
+        self.chevron = _lbl("⌄", "metric-sub", xalign=1.0)
+        self.chevron.set_valign(Gtk.Align.CENTER)
+        hb.pack_end(self.chevron, False, False, 0)
+        self.pack_start(header, False, False, 0)
+
+        self.revealer = Gtk.Revealer()
+        self.revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.revealer.set_transition_duration(140)
+        self.detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self.detail_box.set_margin_start(4)
+        self.detail_box.set_margin_top(4)
+        self.detail_box.set_margin_bottom(4)
+        self.revealer.add(self.detail_box)
+        self.pack_start(self.revealer, False, False, 0)
+
+        self._expanded = False
+        self.on_expand = None
+        header.connect("button-press-event", self._toggle)
+        header.connect("enter-notify-event", lambda w, e: (
+            w.get_window().set_cursor(
+                Gdk.Cursor.new_from_name(w.get_display(), "pointer"))
+            if w.get_window() else None))
+        header.connect("leave-notify-event", lambda w, e: (
+            w.get_window().set_cursor(None) if w.get_window() else None))
+
+    def _toggle(self, *_):
+        self._expanded = not self._expanded
+        self.revealer.set_reveal_child(self._expanded)
+        self.chevron.set_text("⌃" if self._expanded else "⌄")
+        if self._expanded and self.on_expand:
+            self.on_expand()
+        return True
+
+    @property
+    def expanded(self):
+        return self._expanded
 
     def set(self, pct, sub1="", sub2=""):
         self.donut.set_pct(pct)
@@ -249,6 +290,7 @@ class PopupWindow(Gtk.Window):
 
         self.connect("focus-out-event", self._on_focus_out)
         self.connect("key-press-event", self._on_key_press)
+        self.connect("configure-event", self._pin_width)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         root.set_margin_start(16)
@@ -284,8 +326,18 @@ class PopupWindow(Gtk.Window):
         root.pack_start(self._ram, False, False, 0)
 
         self._disk = _MetricRow("Disk")
-        root.pack_start(_click_wrap(self._disk, lambda: self._nav("disks")),
-                        False, False, 0)
+        root.pack_start(self._disk, False, False, 0)
+
+        # Per-component expandable detail content.
+        self._last = None
+        self._build_cpu_detail()
+        self._build_gpu_detail()
+        self._build_ram_detail()
+        self._build_disk_detail()
+        self._cpu.on_expand = lambda: self._last and self._update_cpu_detail(self._last)
+        self._gpu.on_expand = lambda: self._last and self._update_gpu_detail(self._last)
+        self._ram.on_expand = lambda: self._last and self._update_ram_detail(self._last)
+        self._disk.on_expand = self._update_disk_detail
 
         # ── Info rows (network, sensors, uptime) ───────────────────────
         root.pack_start(Gtk.Separator(), False, False, 4)
@@ -353,6 +405,127 @@ class PopupWindow(Gtk.Window):
         self.show_all()
         self.hide()
 
+    # ── Per-component expandable detail ────────────────────────────────
+
+    def _detail_line(self, box, name):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.pack_start(_lbl(name, "info-name", xalign=0.0), False, False, 0)
+        val = _lbl("", "info-val", xalign=1.0, ellipsize=True)
+        row.pack_end(val, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        return val
+
+    def _build_cpu_detail(self):
+        box = self._cpu.detail_box
+        self._cpu_freq = self._detail_line(box, "Frequency")
+        self._cpu_temp_d = self._detail_line(box, "Temperature")
+        self._cpu_load_d = self._detail_line(box, "Load (1·5·15m)")
+        box.pack_start(_lbl("Per-core usage", "sec-title", xalign=0.0),
+                       False, False, 2)
+        self._cpu_cores_grid = Gtk.Grid()
+        self._cpu_cores_grid.set_column_spacing(10)
+        self._cpu_cores_grid.set_row_spacing(1)
+        self._cpu_cores_grid.set_column_homogeneous(True)
+        box.pack_start(self._cpu_cores_grid, False, False, 0)
+        self._cpu_core_lbls = []
+
+    def _build_gpu_detail(self):
+        box = self._gpu.detail_box
+        self._gpu_name_d = self._detail_line(box, "Model")
+        self._gpu_vram_d = self._detail_line(box, "VRAM")
+        self._gpu_temp_d = self._detail_line(box, "Temperature")
+        self._gpu_power_d = self._detail_line(box, "Power")
+
+    def _build_ram_detail(self):
+        box = self._ram.detail_box
+        self._ram_used_d = self._detail_line(box, "Used")
+        self._ram_avail_d = self._detail_line(box, "Available")
+        self._ram_cached_d = self._detail_line(box, "Cached")
+        self._ram_swap_d = self._detail_line(box, "Swap")
+
+    def _build_disk_detail(self):
+        # Per-disk usage, filled live (multi-disk).
+        self._disk_detail_box = self._disk.detail_box
+
+    def _update_cpu_detail(self, s):
+        if s.cpu_freq_mhz > 0:
+            self._cpu_freq.set_text(
+                f"{s.cpu_freq_mhz/1000:.2f} / {s.cpu_freq_max_mhz/1000:.2f} GHz")
+        self._cpu_temp_d.set_text(f"{s.cpu_temp:.0f}°C" if s.cpu_temp > 0 else "—")
+        try:
+            import os
+            self._cpu_load_d.set_text("  ".join(f"{x:.2f}" for x in os.getloadavg()))
+        except Exception:
+            pass
+        cores = s.cpu_per_core or []
+        if len(self._cpu_core_lbls) != len(cores):
+            for c in self._cpu_cores_grid.get_children():
+                self._cpu_cores_grid.remove(c)
+            self._cpu_core_lbls = []
+            cols = 4
+            for i in range(len(cores)):
+                lbl = _lbl("", "info-val", xalign=0.0)
+                self._cpu_cores_grid.attach(lbl, i % cols, i // cols, 1, 1)
+                self._cpu_core_lbls.append(lbl)
+            self._cpu_cores_grid.show_all()
+        for i, (lbl, v) in enumerate(zip(self._cpu_core_lbls, cores)):
+            lbl.set_text(f"C{i} {v:.0f}%")
+
+    def _update_gpu_detail(self, s):
+        self._gpu_name_d.set_text(s.gpu_name or "—")
+        if s.gpu_mem_total_mb > 0:
+            self._gpu_vram_d.set_text(
+                f"{s.gpu_mem_used_mb/1024:.1f} / {s.gpu_mem_total_mb/1024:.1f} GB")
+        self._gpu_temp_d.set_text(f"{s.gpu_temp:.0f}°C" if s.gpu_temp > 0 else "—")
+        self._gpu_power_d.set_text(f"{s.gpu_power_w:.0f} W" if s.gpu_power_w > 0 else "—")
+
+    def _update_ram_detail(self, s):
+        try:
+            vm = psutil.virtual_memory()
+            self._ram_used_d.set_text(f"{vm.used/(1024**3):.1f} GB")
+            self._ram_avail_d.set_text(f"{vm.available/(1024**3):.1f} GB")
+            cached = getattr(vm, "cached", 0)
+            self._ram_cached_d.set_text(f"{cached/(1024**3):.1f} GB")
+        except Exception:
+            pass
+        if s.swap_total_gb > 0:
+            self._ram_swap_d.set_text(
+                f"{s.swap_used_gb:.1f} / {s.swap_total_gb:.1f} GB")
+        else:
+            self._ram_swap_d.set_text("none")
+
+    def _update_disk_detail(self):
+        for c in self._disk_detail_box.get_children():
+            self._disk_detail_box.remove(c)
+        seen = set()
+        skip = {"squashfs", "tmpfs", "devtmpfs", "overlay", "autofs", "ramfs", ""}
+        try:
+            parts = psutil.disk_partitions(all=False)
+        except Exception:
+            parts = []
+        for part in parts:
+            if part.fstype in skip or part.device.startswith("/dev/loop"):
+                continue
+            if part.mountpoint in seen:
+                continue
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+            except Exception:
+                continue
+            seen.add(part.mountpoint)
+            head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            nm = _lbl(part.mountpoint, "info-name", xalign=0.0, ellipsize=True)
+            vv = _lbl(f"{u.percent:.0f}%  "
+                      f"{u.used/(1024**3):.0f}/{u.total/(1024**3):.0f}GB",
+                      "info-val", xalign=1.0)
+            head.pack_start(nm, True, True, 0)
+            head.pack_end(vv, False, False, 0)
+            bar = Gtk.ProgressBar()
+            bar.set_fraction(min(u.percent / 100.0, 1.0))
+            self._disk_detail_box.pack_start(head, False, False, 0)
+            self._disk_detail_box.pack_start(bar, False, False, 0)
+        self._disk_detail_box.show_all()
+
     # ── Caret + body painting ──────────────────────────────────────────
 
     def _draw_bg(self, _w, cr):
@@ -398,6 +571,13 @@ class PopupWindow(Gtk.Window):
     def _on_key_press(self, _w, event):
         if event.keyval == Gdk.KEY_Escape:
             self.hide()
+        return False
+
+    def _pin_width(self, _w, _e):
+        # Keep the panel exactly WIDTH wide — only the height ever changes.
+        width, height = self.get_size()
+        if width != WIDTH:
+            self.resize(WIDTH, height)
         return False
 
     def _on_settings_clicked(self, *_):
@@ -461,6 +641,7 @@ class PopupWindow(Gtk.Window):
 
     def update(self, s: SystemStats, procs=None):
         cfg = self.settings
+        self._last = s
         ex = self._extras()
 
         # CPU
@@ -506,6 +687,16 @@ class PopupWindow(Gtk.Window):
             self._disk.set_visible(True)
         else:
             self._disk.set_visible(False)
+
+        # Expanded per-component detail (only when revealed)
+        if self._cpu.expanded:
+            self._update_cpu_detail(s)
+        if self._gpu.expanded and s.gpu_available:
+            self._update_gpu_detail(s)
+        if self._ram.expanded:
+            self._update_ram_detail(s)
+        if self._disk.expanded:
+            self._update_disk_detail()
 
         # Network
         if "down" in ex:

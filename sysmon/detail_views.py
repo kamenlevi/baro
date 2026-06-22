@@ -25,6 +25,7 @@ class _DetailBase(Gtk.Window):
     def __init__(self, title):
         super().__init__(title=f"SysMon — {title}")
         self.set_default_size(480, 440)
+        self.on_back = None      # called after hiding (returns to the panel)
         self.connect("delete-event", self._on_close)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -37,8 +38,8 @@ class _DetailBase(Gtk.Window):
         header.set_margin_bottom(6)
         back = Gtk.Button(label="←")
         back.set_relief(Gtk.ReliefStyle.NONE)
-        back.set_tooltip_text("Back")
-        back.connect("clicked", lambda *_: self.hide())
+        back.set_tooltip_text("Back to panel")
+        back.connect("clicked", lambda *_: self._back())
         header.pack_start(back, False, False, 0)
         tlbl = Gtk.Label(xalign=0.0)
         tlbl.set_markup(f"<b>{title}</b>")
@@ -56,6 +57,11 @@ class _DetailBase(Gtk.Window):
     def present_window(self):
         self.show_all()
         self.present()
+
+    def _back(self):
+        self.hide()
+        if self.on_back:
+            self.on_back()
 
     def _on_close(self, *_):
         self.hide()
@@ -167,17 +173,25 @@ class HistoryView(_DetailBase):
         ctrl.pack_end(save_default, False, False, 0)
         self.content.pack_start(ctrl, False, False, 0)
 
-        # Legend
+        # Legend (with live current values)
         legend = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        self._legend_vals = {}
         for name, colour in _SERIES:
             item = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
             swatch = Gtk.DrawingArea()
             swatch.set_size_request(14, 10)
             swatch.connect("draw", self._mk_swatch(colour))
             item.pack_start(swatch, False, False, 0)
-            item.pack_start(Gtk.Label(label=name), False, False, 0)
+            vlbl = Gtk.Label(label=f"{name} —")
+            self._legend_vals[name] = vlbl
+            item.pack_start(vlbl, False, False, 0)
             legend.pack_start(item, False, False, 0)
         self.content.pack_start(legend, False, False, 0)
+        note = Gtk.Label(xalign=0.0)
+        note.set_markup("<small>The graph's vertical axis is always 0–100%; "
+                        "each line moves within its own usage range.</small>")
+        note.set_line_wrap(True)
+        self.content.pack_start(note, False, False, 0)
 
         self._graph = _MultiGraph()
         self.content.pack_start(self._graph, True, True, 0)
@@ -213,6 +227,12 @@ class HistoryView(_DetailBase):
         rows = [(r[0], r[1], r[3], r[4]) for r in raw]
         has_gpu = any(r[3] > 0 for r in rows)
         self._graph.set_data(rows, has_gpu)
+        if rows:
+            last = rows[-1]
+            self._legend_vals["CPU"].set_text(f"CPU {last[1]:.0f}%")
+            self._legend_vals["RAM"].set_text(f"RAM {last[2]:.0f}%")
+            self._legend_vals["GPU"].set_text(
+                f"GPU {last[3]:.0f}%" if has_gpu else "GPU —")
 
 
 # ── Processes ────────────────────────────────────────────────────────────────

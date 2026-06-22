@@ -78,6 +78,9 @@ class SysMonIndicator:
         self._history_view = HistoryView(history, settings)
         self._proc_view = ProcessesView()
         self._disks_view = DisksView()
+        # Back arrow on any detail view returns to the detailed panel.
+        for v in (self._history_view, self._proc_view, self._disks_view):
+            v.on_back = self._open_panel
 
         if _HAS_INDICATOR:
             self._indicator = AppIndicator.Indicator.new(
@@ -106,14 +109,16 @@ class SysMonIndicator:
             it = Gtk.ImageMenuItem(label="")
             it.set_image(Gtk.Image())
             it.set_always_show_image(True)
+            sub = Gtk.Menu()
+            it.set_submenu(sub)
             menu.append(it)
-            return it
+            return it, self._make_sub_items(sub, 40)
 
-        self._mi_cpu = gauge_row()
-        self._mi_gpu = gauge_row()
+        self._mi_cpu, self._cpu_items = gauge_row()
+        self._mi_gpu, self._gpu_items = gauge_row()
         self._mi_gpu.set_no_show_all(True)
-        self._mi_ram = gauge_row()
-        self._mi_disk = gauge_row()
+        self._mi_ram, self._ram_items = gauge_row()
+        self._mi_disk, self._disk_items = gauge_row()
 
         self._mi_net = Gtk.MenuItem(label="")
         self._mi_net.set_sensitive(False)
@@ -142,6 +147,48 @@ class SysMonIndicator:
         menu.show_all()
         return menu
 
+    def _make_sub_items(self, submenu, n):
+        items = []
+        for _ in range(n):
+            it = Gtk.MenuItem(label="")
+            it.set_sensitive(False)
+            it.set_no_show_all(True)
+            submenu.append(it)
+            items.append(it)
+        submenu.show_all()
+        return items
+
+    @staticmethod
+    def _fill_items(items, lines):
+        for i, it in enumerate(items):
+            if i < len(lines):
+                it.set_label(lines[i])
+                it.set_visible(True)
+            else:
+                it.set_visible(False)
+
+    def _disk_lines(self):
+        lines = []
+        seen = set()
+        skip = {"squashfs", "tmpfs", "devtmpfs", "overlay", "autofs", "ramfs", ""}
+        try:
+            parts = psutil.disk_partitions(all=False)
+        except Exception:
+            parts = []
+        for part in parts:
+            if part.fstype in skip or part.device.startswith("/dev/loop"):
+                continue
+            if part.mountpoint in seen:
+                continue
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+            except Exception:
+                continue
+            seen.add(part.mountpoint)
+            lines.append(f"{part.mountpoint}:  {u.percent:.0f}%  "
+                         f"({u.used/(1024**3):.0f}/{u.total/(1024**3):.0f} GB)")
+        return lines
+
     def _set_gauge(self, item, key, pct, label):
         item.set_label(label)
         img = item.get_image()
@@ -154,20 +201,49 @@ class SysMonIndicator:
         cfg = self.settings
         self._set_gauge(self._mi_cpu, "cpu", s.cpu_percent,
                         f"CPU   {s.cpu_percent:.0f}%")
+        cpu_lines = []
+        if s.cpu_freq_mhz > 0:
+            cpu_lines.append(f"Frequency:  {s.cpu_freq_mhz/1000:.2f} / "
+                             f"{s.cpu_freq_max_mhz/1000:.2f} GHz")
+        if cfg.show_temp and s.cpu_temp > 0:
+            cpu_lines.append(f"Temperature:  {s.cpu_temp:.0f}°C")
+        for i, c in enumerate(s.cpu_per_core or []):
+            cpu_lines.append(f"Core {i}:  {c:.0f}%")
+        self._fill_items(self._cpu_items, cpu_lines)
+
         if cfg.show_gpu and s.gpu_available:
             self._mi_gpu.set_visible(True)
             self._set_gauge(self._mi_gpu, "gpu", s.gpu_percent,
                             f"GPU   {s.gpu_percent:.0f}%")
+            gpu_lines = []
+            if s.gpu_name:
+                gpu_lines.append(s.gpu_name)
+            if s.gpu_mem_total_mb > 0:
+                gpu_lines.append(f"VRAM:  {s.gpu_mem_used_mb/1024:.1f} / "
+                                 f"{s.gpu_mem_total_mb/1024:.1f} GB")
+            if cfg.show_temp and s.gpu_temp > 0:
+                gpu_lines.append(f"Temperature:  {s.gpu_temp:.0f}°C")
+            if s.gpu_power_w > 0:
+                gpu_lines.append(f"Power:  {s.gpu_power_w:.0f} W")
+            self._fill_items(self._gpu_items, gpu_lines)
         else:
             self._mi_gpu.set_visible(False)
+
         self._set_gauge(self._mi_ram, "ram", s.ram_percent,
                         f"Memory   {s.ram_percent:.0f}%")
+        ram_lines = [f"Used:  {s.ram_used_gb:.1f} / {s.ram_total_gb:.1f} GB"]
+        if s.swap_total_gb > 0:
+            ram_lines.append(f"Swap:  {s.swap_used_gb:.1f} / {s.swap_total_gb:.1f} GB")
+        self._fill_items(self._ram_items, ram_lines)
+
         try:
             disk_pct = psutil.disk_usage("/").percent
         except Exception:
             disk_pct = 0.0
         self._set_gauge(self._mi_disk, "disk", disk_pct,
                         f"Disk   {disk_pct:.0f}%")
+        self._fill_items(self._disk_items, self._disk_lines())
+
         down, up = self._net_rate
         self._mi_net.set_label(f"Network   ↓ {_rate(down)}   ↑ {_rate(up)}")
 
