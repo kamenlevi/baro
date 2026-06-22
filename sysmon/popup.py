@@ -142,8 +142,9 @@ class _MetricRow(Gtk.Box):
     """Expandable metric: clickable header (donut + name + subs + chevron)
     revealing per-component detail below, in place."""
 
-    def __init__(self, name):
+    def __init__(self, name, anim_ms=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._anim_ms_fn = anim_ms or (lambda: 170)
         self.set_margin_top(3)
         self.set_margin_bottom(3)
         header = Gtk.EventBox()
@@ -167,8 +168,6 @@ class _MetricRow(Gtk.Box):
 
         self.revealer = Gtk.Revealer()
         self.revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
-        self._ANIM = 170
-        self.revealer.set_transition_duration(self._ANIM)
         self.detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         self.detail_box.set_margin_start(4)
         self.detail_box.set_margin_top(4)
@@ -202,9 +201,11 @@ class _MetricRow(Gtk.Box):
         self.chevron.set_text("⌃" if target else "⌄")
         if target and self.on_expand:
             self.on_expand()          # fill synchronously → content is ready
+        dur = max(0, int(self._anim_ms_fn()))
+        self.revealer.set_transition_duration(dur)
         self.revealer.set_reveal_child(target)
         self._animating = True
-        GLib.timeout_add(self._ANIM + 10, self._anim_done)
+        GLib.timeout_add(dur + 10, self._anim_done)
 
     def _anim_done(self):
         self._animating = False
@@ -273,16 +274,17 @@ class PopupWindow(CaretPanel):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.stack.add_named(root, "overview")
 
-        self._cpu = _MetricRow("CPU")
+        anim = lambda: int(getattr(self.settings, "anim_ms", 170))
+        self._cpu = _MetricRow("CPU", anim)
         root.pack_start(self._cpu, False, False, 0)
-        self._gpu = _MetricRow("GPU")
+        self._gpu = _MetricRow("GPU", anim)
         root.pack_start(self._gpu, False, False, 0)
         self._gpu.show_all()
         self._gpu.set_no_show_all(True)
         self._gpu.hide()
-        self._ram = _MetricRow("Memory")
+        self._ram = _MetricRow("Memory", anim)
         root.pack_start(self._ram, False, False, 0)
-        self._disk = _MetricRow("Disk")
+        self._disk = _MetricRow("Disk", anim)
         root.pack_start(self._disk, False, False, 0)
 
         self._build_cpu_detail()
@@ -566,8 +568,10 @@ class PopupWindow(CaretPanel):
             star.set_tooltip_text("Show this disk on the main gauge")
             star.connect("clicked", lambda _w, mp=part.mountpoint: self._set_main_disk(mp))
             head.pack_start(star, False, False, 0)
-            head.pack_start(_lbl(part.mountpoint, "info-name", xalign=0.0, ellipsize=True),
-                            True, True, 0)
+            mp_lbl = _lbl(part.mountpoint, "info-name", xalign=0.0)
+            mp_lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            mp_lbl.set_max_width_chars(16)   # cap natural width → panel can't grow
+            head.pack_start(mp_lbl, True, True, 0)
             head.pack_end(_lbl(f"{u.percent:.0f}%  {u.used/(1024**3):.0f}/"
                                f"{u.total/(1024**3):.0f}GB", "info-val", xalign=1.0),
                           False, False, 0)

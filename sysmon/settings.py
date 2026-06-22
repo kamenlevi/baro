@@ -29,6 +29,8 @@ DEFAULTS = {
     "history_default_window": 1800,
     # Mountpoint shown on the main Disk gauge.
     "main_disk": "/",
+    # Expand-animation duration in ms (0 = instant).
+    "anim_ms": 170,
     # Quick-stats popup geometry (persisted across sessions)
     "popup_x": -1,
     "popup_y": -1,
@@ -109,12 +111,28 @@ def open_settings_dialog(settings: Settings, parent=None):
         box.pack_start(row, False, False, 0)
         return sp
 
+    def scale(label, attr, min_v, max_v, step):
+        row = Gtk.Box(spacing=8)
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.set_size_request(200, -1)
+        adj = Gtk.Adjustment(value=getattr(settings, attr), lower=min_v,
+                             upper=max_v, step_increment=step)
+        sc = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+        sc.set_digits(0)
+        sc.set_value_pos(Gtk.PositionType.RIGHT)
+        sc.set_size_request(150, -1)
+        row.pack_start(lbl, True, True, 0)
+        row.pack_start(sc, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        return sc
+
     # Most-used settings first.
     section("Behaviour")
     t_notify = toggle("Desktop notifications for warnings", "notify_desktop")
     sp_poll = spin("Poll interval (seconds)", "poll_interval", 0.5, 10.0, 0.5, 1)
     sp_hist = spin("History retention (hours)", "history_hours", 1, 168)
     sp_graph = spin("Graph window (seconds)", "graph_window_sec", 30, 3600, 30)
+    sc_anim = scale("Animation speed (ms, 0 = instant)", "anim_ms", 0, 600, 10)
 
     section("Warning Thresholds")
     sp_cpu_temp = spin("CPU temp warning (°C)", "warn_cpu_temp", 60, 110)
@@ -134,5 +152,6 @@ def open_settings_dialog(settings: Settings, parent=None):
         settings.poll_interval = sp_poll.get_value()
         settings.history_hours = sp_hist.get_value_as_int()
         settings.graph_window_sec = sp_graph.get_value_as_int()
+        settings.anim_ms = int(sc_anim.get_value())
         settings.save()
     dlg.destroy()

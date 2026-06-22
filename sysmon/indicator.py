@@ -182,7 +182,7 @@ class SysMonIndicator:
             except Exception:
                 continue
             seen.add(part.mountpoint)
-            lines.append(f"{part.mountpoint}:  {u.percent:.0f}%  "
+            lines.append(f"{_short_mount(part.mountpoint)}:  {u.percent:.0f}%  "
                          f"({u.used/(1024**3):.0f}/{u.total/(1024**3):.0f} GB)")
         return lines
 
@@ -379,6 +379,14 @@ class SysMonIndicator:
 
 
 _FIG = "\u2007"   # figure space - same width as a digit
+
+
+def _short_mount(mp, n=18):
+    """Truncate a long mountpoint in the middle so the menu can't grow wide."""
+    if len(mp) <= n:
+        return mp
+    keep = n - 1
+    return mp[: keep // 2] + "…" + mp[-(keep - keep // 2):]
 
 
 def _net_totals():
