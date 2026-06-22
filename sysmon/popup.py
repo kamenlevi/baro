@@ -166,7 +166,9 @@ class _MetricRow(Gtk.Box):
         self.pack_start(header, False, False, 0)
 
         self.revealer = Gtk.Revealer()
-        self.revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
+        self.revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._ANIM = 170
+        self.revealer.set_transition_duration(self._ANIM)
         self.detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         self.detail_box.set_margin_start(4)
         self.detail_box.set_margin_top(4)
@@ -174,7 +176,9 @@ class _MetricRow(Gtk.Box):
         self.revealer.add(self.detail_box)
         self.pack_start(self.revealer, False, False, 0)
 
-        self._expanded = False
+        self._target = False       # current reveal target
+        self._animating = False
+        self._pending = None       # a toggle requested mid-animation
         self.on_expand = None
         header.connect("button-press-event", self._toggle)
         header.connect("enter-notify-event", lambda w, e: (
@@ -184,16 +188,35 @@ class _MetricRow(Gtk.Box):
             w.get_window().set_cursor(None) if w.get_window() else None))
 
     def _toggle(self, *_):
-        self._expanded = not self._expanded
-        self.revealer.set_reveal_child(self._expanded)
-        self.chevron.set_text("⌃" if self._expanded else "⌄")
-        if self._expanded and self.on_expand:
-            self.on_expand()
+        # Queue toggles so each open/close animation plays to completion even
+        # when the user clicks faster than the animation runs.
+        new = not self._target
+        if self._animating:
+            self._pending = new
+        else:
+            self._start(new)
         return True
+
+    def _start(self, target):
+        self._target = target
+        self.chevron.set_text("⌃" if target else "⌄")
+        if target and self.on_expand:
+            self.on_expand()          # fill synchronously → content is ready
+        self.revealer.set_reveal_child(target)
+        self._animating = True
+        GLib.timeout_add(self._ANIM + 10, self._anim_done)
+
+    def _anim_done(self):
+        self._animating = False
+        if self._pending is not None:
+            t, self._pending = self._pending, None
+            if t != self._target:
+                self._start(t)
+        return False
 
     @property
     def expanded(self):
-        return self._expanded
+        return self._target
 
     def set(self, pct, sub1="", sub2=""):
         self.donut.set_pct(pct)
@@ -266,11 +289,12 @@ class PopupWindow(CaretPanel):
         self._build_gpu_detail()
         self._build_ram_detail()
         self._build_disk_detail()
-        # Fill detail on idle so a click toggles instantly (snappy).
-        self._cpu.on_expand = lambda: GLib.idle_add(self._deferred, self._update_cpu_detail)
-        self._gpu.on_expand = lambda: GLib.idle_add(self._deferred, self._update_gpu_detail)
-        self._ram.on_expand = lambda: GLib.idle_add(self._deferred, self._update_ram_detail)
-        self._disk.on_expand = lambda: GLib.idle_add(self._update_disk_detail) and False
+        # Fill detail synchronously so the stats are present the instant the
+        # section opens (even on a very brief open).
+        self._cpu.on_expand = lambda: self._deferred(self._update_cpu_detail)
+        self._gpu.on_expand = lambda: self._deferred(self._update_gpu_detail)
+        self._ram.on_expand = lambda: self._deferred(self._update_ram_detail)
+        self._disk.on_expand = lambda: self._update_disk_detail()
 
         root.pack_start(Gtk.Separator(), False, False, 4)
         self._net = _InfoRow("Network")
